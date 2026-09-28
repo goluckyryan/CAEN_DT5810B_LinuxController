@@ -1,0 +1,23 @@
+# Python bytecode -- regenerated on every run
+__pycache__/
+*.py[cod]
+
+# Virtualenvs
+.venv/
+venv/
+
+# Editor and OS droppings
+*~
+*.swp
+.DS_Store
+
+# Source snapshot taken before the register-address fix (2026-09-24). Git
+# history replaces it now, and REGISTER_ADDRESS_BUG.md documents the change
+# itself. Left on disk, deliberately not tracked -- a tarball is opaque to diff.
+backup_pre_addrfix/
+
+# Scope/USB captures produced by running the experiments. The vendor reference
+# traces in reference/*.json ARE tracked: they are measured ground truth that
+# the shape work in README.md section 9b is checked against, not build output.
+*.pcap
+scope_capture_*.json
