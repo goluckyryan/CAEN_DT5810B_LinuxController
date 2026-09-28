@@ -20,9 +20,12 @@ Uses the CORRECTED timebase and energy register addresses (docs/REGISTER_ADDRESS
 the project's usual 0x0100000x / 0x020f000x carry an extra hex zero and land 16x
 away from the real registers, which is why rate and energy never responded.
 
-The scope readback is strictly read-only apart from the trigger level.
+This GUI controls the emulator and nothing else -- it does not talk to the
+scope. The read-back panel that used to live here is now a separate window,
+`scope/monitor.py`, which runs alongside it; `scope/` is bench apparatus and is
+not part of this repository (see .gitignore).
 """
-import sys, time, traceback
+import os, sys, time, traceback
 
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
@@ -31,7 +34,8 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QFormLayout, QStatusBar, QFileDialog,
 )
 
-sys.path.insert(0, '/home/ryan/caen_signal_emulator/New_attemp_20260922')
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import pulser as P
 import tworegion as T
 from pulser import (Pulser, period_for_rate, rate_for_period, volts_for_energy,
@@ -86,10 +90,31 @@ class Worker(QThread):
 class ChannelPanel(QGroupBox):
     """One channel's controls and derived readouts."""
 
-    def __init__(self, ch, win):
-        super().__init__(f"Channel {ch + 1}")
+    def __init__(self, ch, win, ch3=False):
+        """ch3=True builds the third (coincidence) generator's panel.
+
+        Channel 3 is a FULL channel in the vendor's model, not a stub:
+        DDE-Control allocates ChannelConfiguration[NChannels + 1] -- three
+        channels for a two-channel board -- and its configuration loop runs
+        Update_Generals / Update_Energy / Update_Shape / Update_Timebase over
+        all three, channel 2 included. Its `ReducedChannel` flag strips only the
+        SEQUENCE modes, nothing else. So channel 3 gets rate, energy AND shape.
+
+        What stays hidden here is the analog-stage row set -- baseline, noise
+        and polarity -- because there are only two physical output stages and
+        those are demonstrably controlled by the CH1 and CH2 panels.
+
+        Still unverified: whether a channel-3 event is rendered by channel 3's
+        own shaper or by the shapers of the two channels it emerges through.
+        The experiment (t27/README 9h) was inconclusive -- the scope window was
+        too short for the longer decays. The controls are exposed because the
+        vendor programs them; the measurement is still owed.
+        """
+        super().__init__("Channel 3 — coincidence source" if ch3
+                         else f"Channel {ch + 1}")
         self.ch = ch
         self.win = win
+        self.is_ch3 = ch3
         f = QFormLayout(self)
 
         self.cmb_time = QComboBox()
@@ -140,11 +165,19 @@ class ChannelPanel(QGroupBox):
             "Rise time, 10-90%. Applied by low-pass filtering the exponential on\n"
             "the host, exactly as DDE-Control does (manual sec 10 step 2) -- it\n"
             "is NOT a register. The shape geometry is then chosen to suit it.")
-        f.addRow("Rise (10-90%)", self.sp_rise)
+        self._row_rise = f.rowCount(); f.addRow("Rise (10-90%)", self.sp_rise)
         self.sp_decay = self._dsb(0.05, 5000.0, 50.0, " us", 2)
-        f.addRow("Decay tau", self.sp_decay)
+        self._row_decay = f.rowCount(); f.addRow("Decay tau", self.sp_decay)
         self.sp_base = self._dsb(-1.5, 1.5, 0.0, " V", 3)
-        f.addRow("Baseline", self.sp_base)
+        self._row_base = f.rowCount(); f.addRow("Baseline", self.sp_base)
+        self.sp_noise = self._dsb(0.0, 230.0, 0.0, " mV rms", 1)
+        self.sp_noise.setSpecialValueText("none")
+        self.sp_noise.setToolTip(
+            "Broadband noise added to the baseline (register 0x1400000,\n"
+            "3.55 uV rms per count). The board has an intrinsic ~20 mV rms\n"
+            "floor that this adds to in quadrature, so small values are\n"
+            "swamped by it.")
+        self._row_noise = f.rowCount(); f.addRow("Noise", self.sp_noise)
 
         self.cmb_pol = QComboBox()
         self.cmb_pol.addItems(["Positive-going", "Negative-going"])
@@ -156,7 +189,7 @@ class ChannelPanel(QGroupBox):
             "for you (pulser.invert_for_ch).\n"
             "The amplitude and baseline calibrations were measured POSITIVE-going;\n"
             "negative may land its baseline elsewhere.")
-        f.addRow("Polarity", self.cmb_pol)
+        self._row_pol = f.rowCount(); f.addRow("Polarity", self.cmb_pol)
 
         self.sp_dead = QSpinBox(); self.sp_dead.setRange(0, 2**31 - 1)
         f.addRow("Dead time (counts)", self.sp_dead)
@@ -164,26 +197,38 @@ class ChannelPanel(QGroupBox):
         f.addRow("", self.chk_paral)
         self.chk_comp = QCheckBox(f"compensate decay (x1/{P.DECAY_SCALE})")
         self.chk_comp.setChecked(True)
-        f.addRow("", self.chk_comp)
+        self._row_comp = f.rowCount(); f.addRow("", self.chk_comp)
 
         self.lbl_reg = QLabel("-"); self.lbl_reg.setWordWrap(True)
         f.addRow("Registers", self.lbl_reg)
         self.lbl_geom = QLabel("-"); self.lbl_geom.setWordWrap(True)
-        f.addRow("Shape", self.lbl_geom)
+        self._row_shape = f.rowCount(); f.addRow("Shape", self.lbl_geom)
         self.lbl_chk = QLabel("-"); self.lbl_chk.setWordWrap(True)
         f.addRow("Checks", self.lbl_chk)
-        self.lbl_meas = QLabel("-"); self.lbl_meas.setWordWrap(True)
-        f.addRow("Scope", self.lbl_meas)
 
         row = QHBoxLayout()
         self.btn_apply = QPushButton("Apply + Run")
-        self.btn_apply.clicked.connect(lambda: win.do_apply(self.ch))
+        self.btn_apply.clicked.connect(
+            lambda: (win.do_apply_ch3() if ch3 else win.do_apply(self.ch)))
         self.btn_stop = QPushButton("Stop")
-        self.btn_stop.clicked.connect(lambda: win.do_stop(self.ch))
+        self.btn_stop.clicked.connect(
+            lambda: (win.do_ch3_off() if ch3 else win.do_stop(self.ch)))
         row.addWidget(self.btn_apply); row.addWidget(self.btn_stop)
         holder = QWidget(); holder.setLayout(row)
         f.addRow("", holder)
 
+        if ch3:
+            # Noise stays: the vendor's Noise form has no ReducedChannel check,
+            # so channel 3 gets it unrestricted, and noise injected here is
+            # COMMON-MODE -- it lands on both outputs, unlike the per-channel
+            # noise on the CH1/CH2 panels.
+            # Baseline and polarity go: those are the physical output stage, and
+            # the vendor's UpdateCalibration only calibrates channels 0 and 1,
+            # so there is no third stage for them to act on.
+            for r in (self._row_base, self._row_pol):
+                f.setRowVisible(r, False)
+            self.btn_apply.setText("Apply channel 3")
+            self.btn_stop.setText("Disable")
         self._energy_mode_changed()   # sets initial row visibility, then refreshes
 
     def _energy_mode_changed(self):
@@ -259,6 +304,9 @@ class ChannelPanel(QGroupBox):
                     compensate_decay=self.chk_comp.isChecked(),
                     ch=self.ch)
 
+    def noise_mv(self):
+        return self.sp_noise.value()
+
     def refresh(self):
         t = THEME
         s = self.settings()
@@ -320,31 +368,30 @@ class ChannelPanel(QGroupBox):
                             f"(bin 16383) at gain {gain} — it will clip to the top bin")
             if self.cmb_energy.currentIndex() == 4 and not self.csv_path:
                 warn.append("no spectrum file chosen")
+        if self.is_ch3:
+            warn.insert(0, "drives CH1 and CH2 together. Shape and noise here "
+                           "are programmed the way the vendor does, but NOT yet "
+                           "verified on hardware; noise here should be "
+                           "common-mode to both outputs")
         self.lbl_chk.setText(
             f"<span style='color:{t['ok']}'>ok</span>" if not warn else
             f"<span style='color:{t['warn']}'>" + "<br>".join(warn) + "</span>")
 
-    def set_meas(self, html):
-        self.lbl_meas.setText(html)
-
     def set_enabled(self, on):
         for w in (self.cmb_time, self.sp_rate, self.sp_amp, self.sp_rise,
-                  self.sp_decay, self.sp_base, self.cmb_pol, self.sp_dead,
-                  self.chk_paral, self.chk_comp, self.btn_apply, self.btn_stop):
+                  self.sp_decay, self.sp_base, self.sp_noise, self.cmb_pol,
+                  self.sp_dead, self.chk_paral, self.chk_comp,
+                  self.btn_apply, self.btn_stop):
             w.setEnabled(on)
 
 
 class PulserWindow(QMainWindow):
-    # scope readback is an envelope over this many polls (see poll_scope)
-    ENV_POLLS = 30
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DT5810B — Pulser Control")
         self.resize(1000, 720)
         self.p = Pulser()
         self.connected = False
-        self.scope = None
         self.worker = None
 
         root = QWidget(); self.setCentralWidget(root)
@@ -358,29 +405,35 @@ class PulserWindow(QMainWindow):
         self.btn_conn = QPushButton("Retry connection")
         self.btn_conn.clicked.connect(self.do_connect)
         self.btn_conn.setVisible(False)
-        self.chk_scope = QCheckBox("poll scope 192.168.2.200")
-        self.chk_scope.stateChanged.connect(self.toggle_scope)
         self.chk_dark = QCheckBox("dark")
         self.chk_dark.stateChanged.connect(self.toggle_theme)
         l0.addWidget(self.lbl_conn, 1)
         l0.addWidget(self.btn_conn)
-        l0.addWidget(self.chk_scope)
         l0.addWidget(self.chk_dark)
         outer.addWidget(g0)
 
-        # ---- channel sync (correlation block) ----
-        g1 = QGroupBox("Channel sync")
-        l1 = QHBoxLayout(g1)
-        self.chk_sync = QCheckBox("Sync CH2 to CH1 (shared timebase)")
-        self.chk_sync.setToolTip(
-            "Correlation mode 2, \"Shared Time Based Generator\" (manual sec 9.3).\n"
-            "CH2 stops using its own timebase and fires with CH1, offset by the\n"
-            "delay below. CH2 keeps its own amplitude, shape and polarity; only\n"
-            "its RATE is taken over by CH1.\n"
-            "Without this the two channels free-run. They are then NOT\n"
-            "independent in the useful sense: at equal rates both divide the same\n"
-            "clock, so they sit at a fixed but arbitrary phase offset.")
-        self.chk_sync.stateChanged.connect(self.do_sync)
+        # ---- correlation block: channel sync and the third channel ----
+        g1 = QGroupBox("Correlation")
+        v1 = QVBoxLayout(g1)
+        r1 = QHBoxLayout()
+        self.cmb_corr = QComboBox()
+        self.cmb_corr.addItems(["Off — channels free-run",
+                                "Shared timebase — CH2 fires with CH1",
+                                "Coincidence — channel 3 injects into both"])
+        self.cmb_corr.setToolTip(
+            "Off: two free-running timebases. Note they are then NOT independent\n"
+            "in the useful sense -- at equal rates both divide the same clock, so\n"
+            "they sit at a fixed but arbitrary phase offset.\n\n"
+            "Shared timebase (mode 2): CH2 stops using its own timebase and fires\n"
+            "with CH1, offset by the delay. It keeps its own amplitude, shape and\n"
+            "polarity; only its RATE is taken over.\n\n"
+            "Coincidence (mode 8, 'Ch3'): a third internal generator with its own\n"
+            "rate and energy injects the SAME event into both outputs, so the two\n"
+            "channels are ENERGY-correlated. CH1 and CH2 keep emitting their own\n"
+            "uncorrelated events as well. The delay does NOT apply here.")
+        self.cmb_corr.currentIndexChanged.connect(self.do_sync)
+        r1.addWidget(self.cmb_corr)
+
         lo_ns, hi_ns = (-DELAY_ZERO_COUNTS * DELAY_NS_PER_COUNT,
                         (DELAY_MAX_COUNTS - DELAY_ZERO_COUNTS) * DELAY_NS_PER_COUNT)
         self.sp_delay = QDoubleSpinBox()
@@ -388,17 +441,19 @@ class PulserWindow(QMainWindow):
         self.sp_delay.setDecimals(1); self.sp_delay.setSingleStep(10.0)
         self.sp_delay.setValue(0.0); self.sp_delay.setSuffix(" ns")
         self.sp_delay.setToolTip(
-            f"How far CH2 lags CH1 at the outputs. Step is one 1.25 GS/s DAC\n"
-            f"sample = {DELAY_NS_PER_COUNT} ns; range {lo_ns:.0f} to {hi_ns:.0f} ns.\n"
-            "0 means aligned: the board's fixed pipeline skew (CH2 leads by\n"
-            "~57 ns at register 0) is already taken out.")
+            f"How far CH2 lags CH1 at the outputs. One 1.25 GS/s DAC sample =\n"
+            f"{DELAY_NS_PER_COUNT} ns; range {lo_ns:.0f} to {hi_ns:.0f} ns. 0 means aligned --\n"
+            "the board's fixed pipeline skew is already taken out.\n"
+            "Shared-timebase mode only: measured to have NO effect on channel-3\n"
+            "events, which arrive with a fixed ~47 ns skew.")
         self.sp_delay.valueChanged.connect(self.do_sync)
+        self.lbl_delay = QLabel("CH2 delay")
+        r1.addWidget(self.lbl_delay); r1.addWidget(self.sp_delay)
+        v1.addLayout(r1)
+
         self.lbl_sync = QLabel("off — channels free-run")
         self.lbl_sync.setWordWrap(True)
-        l1.addWidget(self.chk_sync)
-        l1.addWidget(QLabel("CH2 delay"))
-        l1.addWidget(self.sp_delay)
-        l1.addWidget(self.lbl_sync, 1)
+        v1.addWidget(self.lbl_sync)
         outer.addWidget(g1)
 
         # ---- the two channels, side by side, independent ----
@@ -406,6 +461,11 @@ class PulserWindow(QMainWindow):
         self.panels = [ChannelPanel(0, self), ChannelPanel(1, self)]
         for pn in self.panels:
             chans.addWidget(pn)
+        # the third generator: its own timebase and energy, output via CH1/CH2
+        self.panel3 = ChannelPanel(P.Pulser.CH3, self, ch3=True)
+        self.panel3.sp_rate.setValue(500.0)
+        self.panel3.sp_amp.setValue(1.0)
+        chans.addWidget(self.panel3)
         outer.addLayout(chans, 1)
 
         self.log = QPlainTextEdit(); self.log.setReadOnly(True)
@@ -418,8 +478,6 @@ class PulserWindow(QMainWindow):
             "Gain, offset, polarity bit and shape geometry are all derived — "
             "see README.md. Corrected register addresses (docs/REGISTER_ADDRESS_BUG.md).")
 
-        self.scope_timer = QTimer(self)
-        self.scope_timer.timeout.connect(self.poll_scope)
         self.set_enabled(False)
         # connect ourselves once the window is up, rather than making the user do it
         QTimer.singleShot(150, self.do_connect)
@@ -431,10 +489,11 @@ class PulserWindow(QMainWindow):
     def set_enabled(self, on):
         for pn in self.panels:
             pn.set_enabled(on)
-        self.chk_sync.setEnabled(on)
+        self.cmb_corr.setEnabled(on)
         self.sp_delay.setEnabled(on)
-        if on and self.chk_sync.isChecked():
-            self.panels[1].sp_rate.setEnabled(False)   # slaved to CH1
+        self.panel3.set_enabled(on and self.cmb_corr.currentIndex() == 2)
+        if on:
+            self.do_sync()        # re-assert routing and control availability
 
     def busy(self, on):
         self.btn_conn.setEnabled(not on)
@@ -467,7 +526,7 @@ class PulserWindow(QMainWindow):
                     "(pdu/pduOnOff.sh on 3) and the cable is connected.")
             if st == "boot":
                 note("board is in bootloader (000d) - loading FX3 firmware")
-                loader = "/home/ryan/caen_signal_emulator/linux/fx3_firmware_loader.py"
+                loader = os.path.join(HERE, "fx3_firmware_loader.py")
                 subprocess.run([sys.executable, loader], capture_output=True,
                                text=True, timeout=120)
                 for _ in range(20):
@@ -487,9 +546,6 @@ class PulserWindow(QMainWindow):
 
     def do_apply(self, ch):
         kw = self.panels[ch].settings()
-        # the old envelope describes the old settings
-        if hasattr(self.panels[ch], '_env'):
-            self.panels[ch]._env.clear()
 
         panel = self.panels[ch]
         mode = panel.cmb_energy.currentText()
@@ -506,6 +562,11 @@ class PulserWindow(QMainWindow):
                 s = self.p.set_energy_spectrum(hist, ch=ch)
                 note(f"CH{ch+1}: {s['nonzero']} of {s['bins']} bins populated")
             info = self.p.set_pulse(**kw)
+            nz = panel.noise_mv()
+            n = self.p.set_noise(nz, ch=ch)
+            if nz:
+                note(f"CH{ch+1}: noise {n['rms_mv_achievable']:.1f} mV rms "
+                     f"(register {n['counts']})")
             tail = ("fixed energy %d" % info['energy_reg'] if mode == "Fixed"
                     else f"energy from {mode.lower()}")
             return (f"CH{ch+1} running: {info['rate_actual']:.2f} Hz, {tail}, "
@@ -514,35 +575,79 @@ class PulserWindow(QMainWindow):
         self.start(job, f"apply CH{ch+1}")
 
     def do_sync(self):
-        """Apply the correlation block. Four register writes — done inline."""
-        on = self.chk_sync.isChecked()
-        # CH2's rate is taken over by CH1 when synced; say so rather than
-        # leaving a live-looking control that does nothing
+        """Apply the correlation block. A handful of register writes, inline."""
+        mode = self.cmb_corr.currentIndex()          # 0 off, 1 timebase, 2 ch3
+        self.panel3.setEnabled(self.connected and mode == 2)
+        self.sp_delay.setEnabled(self.connected and mode == 1)
+        self.lbl_delay.setEnabled(mode == 1)
+        # CH2's rate is taken over by CH1 in shared-timebase mode; say so rather
+        # than leaving a live-looking control that does nothing
         rate2 = self.panels[1].sp_rate
-        rate2.setEnabled(self.connected and not on)
-        rate2.setToolTip("slaved to CH1 while Channel sync is on" if on else "")
+        rate2.setEnabled(self.connected and mode != 1)
+        rate2.setToolTip("slaved to CH1 while the timebase is shared"
+                         if mode == 1 else "")
         if not self.connected:
             return
+        t = THEME
         try:
-            info = self.p.set_correlation(
-                CORR_TIMEBASE if on else CORR_DISABLED,
-                delay_ns=self.sp_delay.value())
-            t = THEME
-            if on:
-                self.lbl_sync.setText(
-                    f"<span style='color:{t['ok']}'>CH2 follows CH1, lagging "
-                    f"{info['achieved_ns']:+.1f} ns</span> "
-                    f"<span style='color:{t['dim']}'>(register {info['delay_counts']}, "
-                    f"{DELAY_NS_PER_COUNT} ns/step; CH2's own rate is ignored)</span>")
-            else:
+            if mode == 0:
+                self.p.set_correlation(CORR_DISABLED)
                 self.lbl_sync.setText(
                     f"<span style='color:{t['dim']}'>off — channels free-run "
                     f"(at equal rates they sit at a fixed arbitrary phase)</span>")
-            self.say(f"sync {'on' if on else 'off'}: {info}")
+            elif mode == 1:
+                info = self.p.set_correlation(CORR_TIMEBASE,
+                                              delay_ns=self.sp_delay.value())
+                self.lbl_sync.setText(
+                    f"<span style='color:{t['ok']}'>CH2 follows CH1, lagging "
+                    f"{info['achieved_ns']:+.1f} ns</span> "
+                    f"<span style='color:{t['dim']}'>(delay register "
+                    f"{info['delay_counts']}, {DELAY_NS_PER_COUNT} ns/step; "
+                    f"CH2's own rate is ignored)</span>")
+            else:
+                self._program_ch3()
+            self.say(f"correlation: {self.cmb_corr.currentText()}")
         except Exception as e:
             self.lbl_sync.setText(
-                f"<span style='color:{THEME['bad']}'>sync failed: {e}</span>")
-            self.say(f"sync failed: {e}")
+                f"<span style='color:{THEME['bad']}'>correlation failed: {e}</span>")
+            self.say(f"correlation failed: {e}")
+
+    def _program_ch3(self):
+        """Push the channel-3 panel's settings and enable coincidence mode."""
+        pn = self.panel3
+        st = pn.settings()
+        hist = pn.build_spectrum(P.DEFAULT_GAIN)
+        info = self.p.set_correlated_source(
+            rate_hz=st['rate_hz'], amplitude_v=st['amplitude_v'],
+            poisson=st['poisson'], hist=hist,
+            rise_us=st['rise_us'], decay_us=st['decay_us'],
+            noise_mv=pn.noise_mv())
+        what = (f"{pn.cmb_energy.currentText().lower()}" if hist is not None
+                else f"{st['amplitude_v']:g} V")
+        t = THEME
+        self.lbl_sync.setText(
+            f"<span style='color:{t['ok']}'>channel 3 injecting {what} at "
+            f"{st['rate_hz']:g} Hz into BOTH outputs</span> "
+            f"<span style='color:{t['dim']}'>— energies correlated; CH1 and CH2 "
+            f"keep their own events too. The CH2 delay does not apply "
+            f"(fixed ~47 ns skew).</span>")
+        return info
+
+    def do_apply_ch3(self):
+        if self.cmb_corr.currentIndex() != 2:
+            self.cmb_corr.setCurrentIndex(2)       # triggers do_sync, which programs it
+            return
+
+        def job(note):
+            note("channel 3: programming timebase + energy")
+            info = self._program_ch3()
+            return (f"channel 3 running: {info['ch3_rate_hz']:g} Hz, "
+                    f"{'spectrum' if info['ch3_spectrum'] else 'fixed energy'}, "
+                    f"mode reg 0x{info['mode_reg']:x}")
+        self.start(job, "apply channel 3")
+
+    def do_ch3_off(self):
+        self.cmb_corr.setCurrentIndex(0)
 
     def do_stop(self, ch):
         # run() writes through self.ch, so point it at the channel being stopped
@@ -578,7 +683,7 @@ class PulserWindow(QMainWindow):
             self.btn_conn.setVisible(True)
         self.busy(False)
 
-    # ---- theme / scope ----
+    # ---- theme ----
     def toggle_theme(self):
         global THEME
         THEME = DARK if self.chk_dark.isChecked() else LIGHT
@@ -586,79 +691,7 @@ class PulserWindow(QMainWindow):
         for pn in self.panels:
             pn.refresh()
 
-    def toggle_scope(self):
-        if self.chk_scope.isChecked():
-            try:
-                from scope import Scope
-                self.scope = Scope()
-                self.scope_timer.start(1500)
-                self.say("scope connected (read-only)")
-            except Exception as e:
-                self.say(f"scope unavailable: {e}")
-                self.chk_scope.setChecked(False)
-        else:
-            self.scope_timer.stop()
-            if self.scope:
-                self.scope.close(); self.scope = None
-
-    def poll_scope(self):
-        """Read both channels back with per-channel :MEAS:ITEM? queries.
-
-        These need no :WAV:SOUR, so both panels can read without touching the
-        scope's setup.
-
-        Reported as an ENVELOPE over the last few polls, not a single snapshot.
-        Both channels' timebases divide the same clock, so at equal rates they
-        are phase-locked: the channel that is not the trigger source sits at a
-        fixed offset and a single acquisition often catches only its baseline
-        (0.08 V "negative-going" for a healthy 1 V pulse). The envelope reports
-        the real amplitude once the pulse has landed in the window at least
-        once. Detune one channel ~0.5% to make its phase walk.
-        """
-        if not self.scope:
-            return
-        try:
-            trig_src = self.scope.q(':TRIG:EDGE:SOUR?').strip().upper()
-        except Exception:
-            trig_src = ''
-        for i, pn in enumerate(self.panels):
-            c = i + 1
-            triggered = trig_src.endswith(str(c))
-            try:
-                g = lambda k: self.scope.qf(f':MEAS:ITEM? {k},CHAN{c}')
-                vmin, vmax, vavg = g('VMIN'), g('VMAX'), g('VAVG')
-                if None in (vmin, vmax, vavg):
-                    pn.set_meas(f"<span style='color:{THEME['dim']}'>scope CH{c}: "
-                                f"no measurement (not triggered?)</span>")
-                    continue
-                hist = getattr(pn, '_env', None)
-                if hist is None:
-                    from collections import deque
-                    hist = pn._env = deque(maxlen=self.ENV_POLLS)
-                hist.append((vmin, vmax, vavg))
-                lo = min(h[0] for h in hist)
-                hi = max(h[1] for h in hist)
-                mid = sum(h[2] for h in hist) / len(hist)
-                pos = abs(mid - lo) < abs(mid - hi)
-                base = lo if pos else hi
-                note = (f"envelope, {len(hist)} polls" if triggered else
-                        f"envelope, {len(hist)} polls — <b>scope triggers on "
-                        f"{trig_src or '?'}</b>, so this amplitude is a LOWER "
-                        f"BOUND until the pulse drifts into the window")
-                pn.set_meas(
-                    f"<span style='color:"
-                    f"{THEME['dim'] if triggered else THEME['warn']}'>"
-                    f"scope CH{c}: amp {hi-lo:.3f} V, baseline {base:+.3f} V, "
-                    f"{'positive' if pos else 'negative'}-going "
-                    f"<i>({note})</i></span>")
-            except Exception as e:
-                pn.set_meas(f"<span style='color:{THEME['bad']}'>read error: "
-                            f"{e}</span>")
-
     def closeEvent(self, ev):
-        self.scope_timer.stop()
-        if self.scope:
-            self.scope.close()
         if self.connected:
             try:
                 self.p.close()

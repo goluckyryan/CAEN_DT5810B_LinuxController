@@ -22,6 +22,15 @@ backup_pre_addrfix/
 # untracked, INDEX.md included -- the docs still cite it, as a local file.
 experiments/
 
+# Bench instrument access: the read-only SCPI client for the Rigol DHO4804 and
+# the trace analysis built on it. This repository is the emulator control
+# software and nothing else -- the scope is the apparatus used to verify it,
+# tied to one bench (its IP is hardcoded), so it does not belong here.
+# pulser_gui.py's "poll scope" readback imports it lazily inside a try/except,
+# so without this folder the checkbox simply reports "scope unavailable" and
+# everything that drives the emulator works unchanged.
+scope/
+
 # Scope/USB captures produced by running the experiments. The vendor reference
 # traces in reference/*.json ARE tracked: they are measured ground truth that
 # the shape work in README.md section 9b is checked against, not build output.

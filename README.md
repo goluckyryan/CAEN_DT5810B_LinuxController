@@ -17,9 +17,10 @@ Rigol DHO4804 at 1 MΩ. Everything below was measured on this setup,
 ## 1. Quick start
 
 ```bash
-~/caen_signal_emulator/pdu/pduOnOff.sh on 3          # power (PDU load 3)
-python3 ~/caen_signal_emulator/linux/fx3_firmware_loader.py   # 000d -> 000e
+~/caen_signal_emulator/pdu/pduOnOff.sh on 3   # power (PDU load 3, outside this repo)
+python3 fx3_firmware_loader.py               # 000d -> 000e, volatile firmware
 python3 pulser_gui.py        # detector-emulator GUI -- this is the software
+python3 scope/monitor.py     # optional live scope read-back (local, see below)
 ```
 
 Headless, the reference signal (1 kHz, 1 V, 100 ns rise, 50 µs decay, 0 V base):
@@ -190,10 +191,14 @@ read  : f0 ff ba ab | addr(LE) | N(LE)          -> N words back on EP 0x81
 ```
 EP OUT `0x02`, EP IN `0x81`.
 
-**Address verbatim, count = N exactly.** `linux/dt5810.py:186` sends `addr-1` and
-`count+2`; both are wrong — proven by reading `0xFFFF0000` both ways and seeing
-the response shift by one word. The "reads are flaky, retry 4×" logic in
-`board_id()` is a symptom of that, not a device trait.
+**Address verbatim, count = N exactly.** Proven by reading `0xFFFF0000` both
+ways and seeing the response shift by one word. The "reads are flaky, retry 4×"
+logic in `board_id()` is a symptom of the wrong framing, not a device trait.
+
+The copy of the driver **in this repo** (`dt5810.py`) sends the correct framing
+and returns exactly N words. The older copy at `~/caen_signal_emulator/linux/
+dt5810.py:186` still sends `(addr-1)` and `(count+2)`; it is left alone because
+`dt5810_gui.py` and `dt5810_mcp.py` still import it.
 
 **Config space is write-only.** Every config register returns the repeating
 `FF FF BA AB` filler. `0xFFABBAFF` and `0xFFFFABBA` are the *same* filler at
@@ -719,6 +724,307 @@ back to fixed amplitude every time its shape was reprogrammed.
 
 ---
 
+## 9g. Correlating the ENERGY between channels (2026-09-28)
+
+§9e shares the *timebase*, so the channels fire together but each draws its own
+amplitude. The correlation block has two further modes intended to correlate the
+energy as well. One works; one does not.
+
+| mode | `0x2E000000` | CH1 en/tb mux | CH2 en/tb mux | result |
+|---|---|---|---|---|
+| `CORR_TIMEBASE` | 2 | 0 / 0 | 0 / **1** | time only, energies independent |
+| `CORR_SAME` | 1 | 0 / 0 | 0 / 0 | **does not engage** — see below |
+| `CORR_CH3` | **8** | **2 / 2** | **2 / 2** | **energies correlated** ✅ |
+
+The mux columns come from `Update_Muxes()`, and as with §9e the mode register
+alone does nothing without them. Note the Ch3 mode is register **8**, not 3:
+the field is `(mode & 7) | (enable_ch3 << 3)`, and DDE-Control passes
+`correlation_mode = 0` with `enableCchannel = 1`.
+
+### `CORR_CH3` — a third generator feeding both outputs
+
+A third internal channel, in register space `ch = 2`, has its own rate and its
+own energy (fixed or from a spectrum) and injects the **same event** into CH1
+and CH2 together.
+
+```python
+p.set_correlated_source(rate_hz=500, amplitude_v=1.0)        # fixed energy
+p.set_correlated_source(rate_hz=500, hist=two_peak_spectrum)  # or a spectrum
+```
+
+Measured: third channel at 500 Hz / 1.0 V gave **30 of 30** acquisitions with
+both outputs carrying it — CH1 mean 1.004 V, CH2 mean 0.985 V, in the same
+capture window.
+
+This takes over both channels: every energy and timebase mux goes to 2, so CH1
+and CH2 stop using their own generators. Their analog settings and their shape
+RAM still apply, so the outputs can still differ in shape and amplitude scale
+while carrying the same event.
+
+### How the correlation was proved without a two-channel capture
+
+Reading `VMAX,CHAN1` then `VMAX,CHAN2` does **not** work: the scope re-triggers
+between the two queries, so with a spectrum running the samples come from
+different events. Doing it anyway gave r = +0.51 — suggestive but weak, and the
+weakness is the measurement, not the hardware.
+
+The clean test uses the trigger as a discriminator. Put a **two-peak** source on
+the third channel and set CH2's trigger level *between* the peaks, so only
+events where CH2 is in the high peak are captured. Then look at CH1:
+
+| CH2 gate | CH1 in the low peak |
+|---|---|
+| 0.50 V (accepts both) | 38 % |
+| 0.90 V (accepts only CH2-high) | **0 %** |
+
+Gating CH2 high removed CH1's low peak entirely. The same test under
+`CORR_TIMEBASE` left CH1 at 36 % low — both peaks intact. That is the
+distinction, measured: **Ch3 correlates the energy, shared-timebase does not.**
+
+### `CORR_SAME` — unresolved
+
+"Channel 2 follows exactly channel 1" (register 1, all muxes 0, exactly what
+`Update_Muxes()` does) does not engage. Both outputs drop to a very low
+effective rate and the scope stops triggering even with the level at 0.15 V.
+
+The suggestive detail: while this happens the two channels' amplitude ranges
+track each other almost exactly (0.068–0.501 V against 0.071–0.502 V, identical
+means), which hints the replication itself is working and it is the firing rate
+that collapses. That is a hypothesis, not a result.
+
+Tried and did not help: CH2 with fixed energy instead of a spectrum, CH2
+`tb_mux = 1`, CH2 `en_mux = 1`, both muxes 1. Something is still missing, the
+way the timebase mux was for `CORR_TIMEBASE`. Since `CORR_CH3` delivers energy
+correlation and is verified, this was not chased further.
+
+---
+
+## 9h. What channel 3 can do (2026-09-28)
+
+The third generator lives in register space **`ch = 2`** — the same space the
+correlation registers sit in — and has the full per-channel register set. Its
+output is not a connector: it reaches the outside world *through* CH1 and CH2.
+
+| capability | status |
+|---|---|
+| own timebase, constant rate | ✅ verified 50 Hz – 1 kHz |
+| own timebase, **Poisson** | ✅ but needs the LFSR strobe below |
+| own energy, fixed | ✅ |
+| own energy, **full 16384-bin spectrum** | ✅ |
+| injects the same event into CH1 **and** CH2 | ✅ 30/30 acquisitions |
+| energies correlated between channels | ✅ 38 % → 0 % discriminator test (§9g) |
+| CH1/CH2 keep their own background events | ✅ see below |
+| CH2 delay applies to ch3 events | ❌ no effect |
+| channel 3 has its **own shape generator** | ✅ the vendor programs one |
+| channel 3 has its **own noise generator** | ✅ the vendor's Noise form is unrestricted for it |
+| channel 3 has its own baseline drift | ✅ programmed by the vendor; drift itself unexplored |
+| which shaper renders a ch3 event | ❓ still unverified |
+| whether ch3 noise/baseline reach the outputs | ❓ not yet measured (board down) |
+
+```python
+p.set_correlated_source(rate_hz=500, amplitude_v=1.0)          # fixed
+p.set_correlated_source(rate_hz=500, hist=spec, poisson=True)  # spectrum + Poisson
+```
+
+In the GUI this is the **Correlation** selector set to "Coincidence — channel 3
+injects into both", which reveals the third channel's rate, amplitude, peak
+width and Poisson controls. The CH2 delay box greys out there, because the
+delay has no effect on ch3 events. Verified through the GUI: 25/25 acquisitions
+with the event on both outputs.
+
+### Backgrounds coexist with the correlated events
+
+This is the arrangement the manual's Fig 9.4 describes, and it does work: CH1
+and CH2 keep emitting their *own* uncorrelated events while ch3 injects a
+correlated one into both. With CH1 and CH2 each at 0.4 V and ch3 at 1.0 V, and
+CH1 detuned 0.5 % so its phase walks through the window:
+
+| | CH1 own 0.4 V band | ch3 1.0 V band |
+|---|---|---|
+| correlation off | 5 | 0 |
+| `CORR_CH3` | 5 | 7 |
+
+The background rate is untouched; the correlated events are added on top. An
+earlier run concluded the opposite — the trigger was at 0.6 V, which filtered
+the 0.4 V background out, and CH1 was phase-locked outside the window. Both
+artifacts at once, and the wrong conclusion looked clean.
+
+### The CH2 delay does not reach ch3 events
+
+`delay_ns` shifts CH2 in `CORR_TIMEBASE` (§9e) but has **no effect** on ch3
+events: 0, 500, 1500 and 3000 ns all measured the same ~−47 ns skew, with CH2
+*leading* CH1 by that fixed amount. The delay buffer sits in CH2's own
+datapath, not in the third channel's fan-out. So the coincidence pair arrives
+with a fixed offset that cannot currently be programmed — worth knowing if you
+want a time-of-flight spread.
+
+### Two things not established
+
+**Which shaper renders a channel-3 event.** Not resolved: the measured decay
+did not track the setting (2 µs read 6.6 µs, and 8/20 µs found no pulse at
+all). The measurement is the suspect part — a 20 µs scope window is too short
+for the longer decays. Still owed.
+
+What *is* settled is that **channel 3 has a shape generator of its own**, and
+the vendor programs it. `DDE-Control` allocates
+`ChannelConfiguration[NChannels + 1]` — three channels for a two-channel board
+— and its configuration loop runs `Update_Generals`, `Update_Energy`,
+`Update_Shape`, `Update_Shape_Custom` and `Update_Timebase` over all three,
+channel 2 included. The `ReducedChannel` flag it sets on channel 2 strips only
+the *Sequence* modes; it does not touch the shape.
+
+So channel 3 takes rate, energy **and** shape, and `set_correlated_source`
+accepts `rise_us` / `decay_us` to program its shape RAM at `ch = 2`. An earlier
+version of this document and of the GUI treated channel 3 as shapeless, which
+was an assumption drawn from the inconclusive measurement above rather than
+from the vendor code — the vendor code says otherwise.
+
+**Noise and baseline as well.** The same loop runs `Update_Noise`,
+`Update_Noise_Interference`, `Update_Baseline`, `Update_BaselinePoints` and
+`Update_Random` over channel 2. Of the whole vendor UI only three forms check
+`ReducedChannel` — `EnergyCtrl`, `TimeCtrl` and `RandomCtrl` — and all they do
+is remove the *Sequence* options. The Noise and Baseline forms do not check it
+at all, so channel 3 gets them unrestricted.
+
+This is a real distinction, not a curiosity: noise injected at channel 3 is
+**common-mode**, landing on both outputs together, where the noise set on the
+CH1 and CH2 panels is independent per channel. For coincidence work that is the
+difference between correlated and uncorrelated noise on the pair.
+
+`set_correlated_source(noise_mv=...)` programs it, and the GUI exposes a Noise
+row on the channel-3 panel. **Neither is verified on hardware** — the board
+froze before it could be measured. Baseline *drift* (`ConfigureBaselineDrift`)
+remains unexplored for every channel, not just this one.
+
+What stays off the channel-3 panel is the baseline DC level and the polarity:
+those act on the physical output stage, and the vendor's `UpdateCalibration`
+calibrates only channels 0 and 1, so there is no third stage for them to reach.
+
+**Poisson statistics.** Poisson mode now *emits* at the right average rate, but
+the interval distribution was never verified to be exponential. The scope, with
+one pulse per 20 µs window, cannot measure inter-pulse intervals.
+
+---
+
+## 9i. ⭐ Poisson mode never worked — the timebase LFSR was never started
+
+Found while characterising ch3, and it applies to **every** channel.
+
+`ConfigureLFSR` @`0x10006da0` maps `LFSR_TIMEBASE` to a strobe of
+**`0x100004`** (1 then 0). We strobe the *energy* LFSR at `0x20f002` and always
+have, but never this one. Without it the Poisson generator never starts and the
+channel emits **nothing at all** — not a wrong rate, no output:
+
+| | pulses seen | trigger |
+|---|---|---|
+| constant rate | 30/30 | TD |
+| Poisson, no strobe | **0/30** | AUTO |
+| Poisson + strobe | 30/30 | TD |
+
+Measured on CH2, which is the scope's trigger source, so this is direct rather
+than inferred. `pulser.py` now strobes `R_TB_LFSR` whenever Poisson is selected,
+on both the per-channel path and the third channel.
+
+This had been silently broken for the whole project, and `pulser_gui.py` has
+offered a Poisson timebase the entire time. It went unnoticed because nothing
+ever tested it against the scope: the mode was selected, no pulses came out, and
+that is indistinguishable from the many other "no output" states seen along the
+way. Same lesson as §9e and §9f — for this board, setting the mode register is
+never the whole story.
+
+---
+
+## 9j. Baseline noise (2026-09-28)
+
+`ConfigureNOISE` @`0x1000b3e0` takes
+`(RANDM, GAUSS, DRIFTM, FLIKERM, FLIKERCorner, handle, ch)` — four independent
+generators, each an amplitude with 0 = off, plus a corner frequency for the
+flicker one. `Update_Noise()` just reads the four amplitudes out of the config
+and passes them straight through.
+
+### Finding the registers
+
+Unlike every other function decoded here, this one **does not push its register
+addresses as immediates** — they are computed — and `objdump` loses sync partway
+through because the body builds ~3.5 KB of flicker filter coefficients on the
+stack. The route that worked:
+
+1. parse the PE section table to map VA `0x10005fc0` to its file offset
+2. scan the 3545-byte function body for any 4-byte value shaped like a register
+3. ignore the coefficient noise and look for a **cluster of consecutive
+   addresses** — `0x1400000/4/5/7/8/9` stood out, and `0x1400009` was the
+   already-known `LFSR_NOISE_GAUSS` strobe, which confirmed the family
+4. write a large magnitude to each candidate and watch the scope baseline
+
+Step 4 is what actually settled it; steps 1–3 only produced the shortlist.
+
+### What was found
+
+| register | effect | scale |
+|---|---|---|
+| `0x1400000` | broadband noise, `LFSR_NOISE_GAUSS` family | **3.55 µV rms/count**, to 232 mV |
+| `0x1700002` | broadband noise, stronger | **10.68 µV rms/count**, to ~700 mV |
+| `0x1400004/5/7/8`, `0x15/16/18/19/1a xxxxx` offsets 0–5 | nothing | — |
+
+Both are **broadband, not drift**: the sample-to-sample difference measured
+~1.65 × the standard deviation, close to the √2 of uncorrelated noise. Neither
+behaves like a slow wander, so the random-walk and flicker generators are
+presumably the two that were not found.
+
+`0x1400000` is linear to better than 5 % across the whole range. The board has
+an intrinsic **~20 mV rms floor** that adds in quadrature:
+
+| asked | predicted with floor | measured |
+|---|---|---|
+| 0 mV | 20.1 | 19.9 |
+| 30 mV | 36.1 | 36.6 |
+| 60 mV | 63.3 | 63.7 |
+| 120 mV | 121.7 | 121.5 |
+| 200 mV | 201.0 | 200.7 |
+
+```python
+p.set_noise(60, ch=0)          # 60 mV rms of baseline noise
+p.set_noise(60, ch=0, generator='b')   # the coarser, stronger source
+p.noise_off(ch=0)
+```
+
+---
+
+## 9k. Coverage against the Windows software
+
+Everything `DDE3.dll` exports in the `Configure*` family, and what we do with
+it. This is the map of what is left.
+
+| vendor entry point | status |
+|---|---|
+| `ConfigureTimebase` | ✅ rate, Poisson, dead time, paralyzable (§9i) |
+| `ConfigureEnergy` | ✅ fixed amplitude |
+| `ProgramSpectrum` | ✅ full 16384-bin spectra (§9f) |
+| `ConfigureShapeGenerator` | ✅ arbitrary rise + decay, two-region interpolator (§9b/9c) |
+| `DelayAndCorrelationControl` | ✅ shared timebase + delay (§9e), Ch3 coincidence (§9g/9h); `CORR_SAME` unresolved |
+| `ConfigureLFSR` | ✅ energy, timebase and gauss-noise strobes |
+| `ConfigureNOISE` | ⚠️ 2 of 4 generators found (§9j); random-walk and flicker not located |
+| `ConfigureGeneral` | ✅ gain, offset, invert, analog mux |
+| `EmulatorAWGModeControl` / `ProgramDDR` | ✅ AWG mode (secondary, §6) |
+| `ConfigureDRC` | ❌ produces no output; clean negative, re-proved after the address fix |
+| `ConfigureBaselineDrift` | ❌ **not explored** — `(nodes[], length, interp_slow, interp_fast, reconfigure, enable, reset)`, a node-interpolated baseline wander |
+| `ConfigureMultishape` | ❌ **not explored** — `(prob2, prob3, prob4, enable)`, picks among shape slots by probability. We program all 16 slots identically, so this is free capability |
+| `ConfigureTR` | ❌ **not explored** — pulsed/transistor reset, and `FEAT_PULSED_RESET` *is* declared for this board |
+| sequence modes | ❌ **not explored** — `EnergyMode 2` / `TimeMode 2`, with `FEAT_SEQUENCE_AMP` and `FEAT_SEQUENCE_TIME` declared |
+| `ConfigureDIO` / `SetDIO` | ❌ not explored — digital I/O and external trigger (`TimebaseMux = 4`) |
+| `GetSignalLoopback` | ❌ not explored — **would read the generated signal back over USB**, i.e. verification without the scope |
+| `DPP_*`, `MCA_ReadPreview` | ❌ not explored — the board can *digitise* an input (`FEAT_ANALOG_IN`) |
+| HV channel | ❌ not explored (`FEAT_HVCH`) |
+| flash / activation / security | ❌ deliberately untouched |
+
+Two of these look worth doing next: **`ConfigureMultishape`**, because the shape
+slots are already programmed and only the selection probabilities are missing,
+and **`GetSignalLoopback`**, because reading the generated waveform back over
+USB would remove the scope from the verification loop entirely — and most of the
+wrong turns in this project were scope artifacts.
+
+---
+
 ## 10. How the Windows software builds a shape
 
 `DDE-Control.decompiled.cs:12921`, the FAST/exponential branch:
@@ -741,21 +1047,45 @@ approach drives FAST outside its design domain. `DT_GetShapeMode` is pure manage
 
 ## 11. Files
 
+**The repository is the emulator control software and nothing else.** Everything
+tracked below drives the DT5810B. Bench apparatus and lab scratch work live
+beside it on disk but are gitignored, and are marked *(local)*.
+
+### The software
+
 | file | purpose |
 |---|---|
-| `pulser.py` / `pulser_gui.py` | **Pulser mode** — corrected registers, the working path. The GUI is a panel per channel; each runs independently |
-| `spectrum.py` | **Energy spectrum mode** — histogram → cumulative → spectrum RAM, plus builders (Gaussian, flat, delta, CSV) |
-| `shaperam.py` / `analyse_trace.py` | shape-RAM helper used by `pulser.py`; trace analysis used by the experiments |
-| `experiments/awg_backend.py` / `awg_gui.py` | **AWG mode** — moved out of the shipped set, see §6 |
-| `tworegion.py` | two-region interpolated shape builder (arbitrary rise + long tail) |
-| `fastshape.py` | vendor FAST formula, ported verbatim |
-| `shaperam.py` | shape-RAM packing helpers |
-| `scope.py` | strictly read-only scope access (only `:TRIG:EDGE:LEV` may be written) |
-| `analyse_trace.py` | waveform capture and shape characterisation |
-| `experiments/` | lab scratch work — **not in the repo** (`.gitignore`), kept on the lab machine. Its `INDEX.md` says what each experiment proved and which are confounded; the numbered scripts are the evidence behind §9 |
+| `dt5810.py` | **USB driver** — the low-level layer everything sits on. Corrected read framing; see §4 |
+| `fx3_firmware_loader.py` | loads the volatile FX3 firmware, `000d` → `000e`, needed after every cold power-up |
+| `pulser.py` | **Pulser mode** — the working detector-emulator path, with the corrected registers |
+| `pulser_gui.py` | PyQt6 front end. Per channel: rate, amplitude, energy mode (fixed / Gaussian / two peaks / continuum / CSV), rise, decay, baseline, **noise**, polarity, dead time. Across both: a **Correlation** selector — off, shared timebase with CH2 delay, or **coincidence via channel 3** with its own rate, amplitude, peak width and Poisson |
+| `tworegion.py` | two-region interpolated shape builder — arbitrary rise with a long tail |
+| `spectrum.py` | **energy spectrum mode** — histogram → cumulative → spectrum RAM, plus builders (Gaussian, flat, delta, CSV) |
+| `shaperam.py` | shape-RAM packing helpers, used by `pulser.py` |
 | `tools/fix_register_addresses.py` | the one-shot address rewriter (already applied) |
-| `docs/REGISTER_ADDRESS_BUG.md` | the §2 discovery in full, with evidence |
-| `docs/superseded/` | working notes written before that bug was found — kept for their evidence and dead ends; its `README.md` lists which conclusions were disproved |
 
-Scope rule: Ryan drives the scope. `scope.py` enforces it — queries plus
-`:TRIG:EDGE:LEV` only, everything else raises.
+### Documentation and evidence
+
+| path | purpose |
+|---|---|
+| `README.md` | this file — the authoritative reference |
+| `docs/REGISTER_ADDRESS_BUG.md` | the §2 discovery in full, with the disassembly evidence |
+| `docs/superseded/` | working notes written before that bug was found; its `README.md` lists which conclusions were disproved |
+| `reference/` | vendor traces captured from the Windows software — measured ground truth for §9b |
+
+### Not in the repo *(local to the lab machine)*
+
+| path | purpose |
+|---|---|
+| `scope/` | Rigol DHO4804 access — `scope.py` (strictly read-only), `analyse_trace.py`, and `monitor.py`, a standalone live read-back window to run alongside the GUI. Every calibration here was measured through it, but it is apparatus, not product, and its IP is hardcoded |
+| `experiments/` | the 26 numbered experiments behind §9, the superseded deliverables, and **AWG mode** (`awg_gui.py`, `awg_backend.py` — see §6). `INDEX.md` records what each proved and which are confounded |
+| `backup_pre_addrfix/` | pre-fix source snapshot, superseded by git history |
+
+`pulser_gui.py` does not import `scope/` at all: it controls the emulator and
+nothing else. The read-back that used to be a "poll scope" checkbox inside it is
+now `scope/monitor.py`, a separate window you run alongside. A checkout of this
+repository therefore has no scope dependency, and the scope's IP is no longer
+baked into the GUI.
+
+Scope rule: Ryan drives the scope. `scope/scope.py` enforces it in code —
+queries plus `:TRIG:EDGE:LEV` only, everything else raises `PermissionError`.

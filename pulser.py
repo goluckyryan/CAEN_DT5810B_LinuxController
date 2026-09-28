@@ -27,9 +27,10 @@ Shape still comes from the shape-RAM (memory) datapath. Digital RC remains inert
 even with correct energy addressing - verified by loading the shape RAM with a
 5 us decay and the DRC coefficients with 50 us: the output followed the shape RAM.
 """
-import math, sys, time
+import math, os, sys, time
 
-sys.path.insert(0, '/home/ryan/caen_signal_emulator/linux')
+# the USB driver now lives beside this file, so the repo is self-contained
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dt5810 import DT5810, _reg                      # noqa: E402
 
 CLOCK_HZ = 312.5e6          # timebase clock, derived from measurement
@@ -40,6 +41,29 @@ R_PERIOD = 0x100009
 R_ALPHA = 0x100006
 R_PARAL = 0x100007
 R_DEADTIME = 0x100008
+# --- baseline noise (ConfigureNOISE @0x1000b3e0, body @0x10005fc0) ---
+# The DLL takes ConfigureNOISE(RANDM, GAUSS, DRIFTM, FLIKERM, FLIKERCorner):
+# four independent generators, each an amplitude with 0 = off. Its register
+# writes are computed rather than pushed as immediates, so the addresses were
+# found by scanning the function body for register-shaped constants and then
+# testing each one against the scope. Two produce noise; the rest did nothing.
+R_NOISE_A = 0x1400000     # in the LFSR_NOISE_GAUSS family (LFSR at 0x1400009)
+R_NOISE_B = 0x1700002     # a second, stronger broadband generator
+R_NOISE_GAUSS_LFSR = 0x1400009
+R_NOISE_RW_LFSR = 0x1900003
+# Measured 2026-09-28 on the baseline, board floor 20.1 mV rms subtracted in
+# quadrature. Both linear to better than 5% over the full range:
+NOISE_A_UV_PER_COUNT = 3.55      # 65535 -> 232 mV rms
+NOISE_B_UV_PER_COUNT = 10.68     # 40000 -> 427 mV rms
+NOISE_MAX_COUNT = 65535
+
+R_TB_LFSR = 0x100004      # timebase LFSR reprogram strobe. ConfigureLFSR
+                          # @0x10006da0 maps LFSR_TIMEBASE to this; without a
+                          # 1-then-0 strobe here the Poisson generator never
+                          # starts and the channel emits NOTHING. Measured
+                          # 2026-09-28 on CH2 (the scope trigger source):
+                          # Poisson without it 0/30 acquisitions and the scope
+                          # in AUTO; with it 30/30 and TD.
 R_ENERGY_STROBE = 0x20f002
 R_ENERGY_MODE = 0x20f004
 R_ENERGY_VAL = 0x20f005
@@ -54,10 +78,29 @@ R_EN_MUX = 0x0f000006
 R_CORR_MODE = 0x2E000000    # (mode & 7) | (enable_ch3 << 3)
 R_CORR_DELAY = 0x2E000001   # delay, in DAC samples
 
-CORR_DISABLED = 0     # two free-running timebases
-CORR_SAME = 1         # CH2 is an exact replica of CH1, including noise
-CORR_TIMEBASE = 2     # shared timebase: CH2 fires with CH1, but keeps its own
-                      # amplitude, shape and polarity. This is the useful one.
+CORR_DISABLED = 0     # two free-running timebases, nothing correlated
+CORR_SAME = 1         # CH2 is an exact replica of CH1 -- same time AND same
+                      # energy, event by event. The vendor GUI disables its CH2
+                      # tab in this mode because CH2 has no settings of its own.
+CORR_TIMEBASE = 2     # shared timebase only: CH2 fires with CH1 but draws its
+                      # own amplitude. Time-correlated, energy-INdependent.
+CORR_CH3 = 3          # a third internal generator, with its own energy and time
+                      # statistics, injects the SAME event into both outputs.
+                      # CH1 and CH2 otherwise run uncorrelated, so you get a
+                      # correlated subset on top of two independent backgrounds
+                      # -- the coincidence / PET case (manual sec 9.3, Fig 9.4).
+
+# What each mode writes. The mode register is (mode & 7) | (enable_ch3 << 3), so
+# the Ch3 mode is register 8, not 3 -- DDE-Control passes correlation_mode = 0
+# with enableCchannel = 1 for it. The mux columns come from Update_Muxes():
+# setting the mode register alone does nothing, exactly as for CORR_TIMEBASE.
+#                      mode_reg  (en_mux, tb_mux) ch0   (en_mux, tb_mux) ch1
+_CORR_SETUP = {
+    CORR_DISABLED: (0, (0, 0), (0, 0)),
+    CORR_SAME:     (1, (0, 0), (0, 0)),
+    CORR_TIMEBASE: (2, (0, 0), (0, 1)),
+    CORR_CH3:      (8, (2, 2), (2, 2)),
+}
 
 # Measured 2026-09-25 (t24): 3.200 us of shift over 4000 counts = 0.800 ns per
 # count, i.e. one 1.25 GS/s DAC sample. The manual quotes 1 ns for the 1 GS/s
@@ -308,16 +351,22 @@ class Pulser:
         self._spectrum_ch = set()      # the RAM is volatile; a reopen clears it
         return self
 
-    def _tb_mux_for(self, ch):
-        """Which timebase drives this channel.
+    def _mux_for(self, ch):
+        """(energy_mux, timebase_mux) for this channel under the current mode.
 
-        0 = the channel's own generator. 1 = the correlation block, which is
-        what CH2 needs in shared-timebase mode. DDE-Control does this in
-        Update_Muxes(): mode4 = 1 for CorrelationMode.Timebase, then
-        DT_TimebaseMux(mode4, handle, 1). Setting R_CORR_MODE alone does
-        nothing without it -- that cost an experiment to find.
+        0 = the channel's own generator, 1 = the correlation block, 2 = the
+        third internal channel. DDE-Control sets these in Update_Muxes() right
+        after writing the mode register; the mode register ALONE does nothing
+        without them, which cost an experiment to find.
         """
-        return 1 if (ch == 1 and self._corr_mode == CORR_TIMEBASE) else 0
+        _, m0, m1 = _CORR_SETUP.get(self._corr_mode, _CORR_SETUP[CORR_DISABLED])
+        return m1 if ch == 1 else m0
+
+    def _tb_mux_for(self, ch):
+        return self._mux_for(ch)[1]
+
+    def _en_mux_for(self, ch):
+        return self._mux_for(ch)[0]
 
     def set_correlation(self, mode=CORR_TIMEBASE, delay_ns=0.0):
         """Lock CH2's timing to CH1, optionally offset by delay_ns.
@@ -334,18 +383,23 @@ class Pulser:
 
         Returns the register values actually written.
         """
+        if mode not in _CORR_SETUP:
+            raise ValueError(f"unknown correlation mode {mode}")
         counts = int(round(DELAY_ZERO_COUNTS + delay_ns / DELAY_NS_PER_COUNT))
         counts = max(0, min(DELAY_MAX_COUNTS, counts))
         self._corr_mode = mode
         self._corr_delay_ns = delay_ns
+        mode_reg = _CORR_SETUP[mode][0]
         self.d.wr(R_CORR_DELAY, counts)
-        self.d.wr(R_CORR_MODE, mode & 0x7)
-        # route CH2's timebase; CH1 always runs its own
-        self.d.wr(_reg(1, R_TB_MUX), self._tb_mux_for(1))
-        self.d.wr(_reg(0, R_TB_MUX), self._tb_mux_for(0))
-        return {"mode": mode, "delay_ns": delay_ns, "delay_counts": counts,
+        self.d.wr(R_CORR_MODE, mode_reg)
+        for ch in (0, 1):
+            en, tb = self._mux_for(ch)
+            self.d.wr(_reg(ch, R_EN_MUX), en)
+            self.d.wr(_reg(ch, R_TB_MUX), tb)
+        return {"mode": mode, "mode_reg": mode_reg, "delay_ns": delay_ns,
+                "delay_counts": counts,
                 "achieved_ns": (counts - DELAY_ZERO_COUNTS) * DELAY_NS_PER_COUNT,
-                "tb_mux_ch2": self._tb_mux_for(1)}
+                "muxes": {f"ch{c}": self._mux_for(c) for c in (0, 1)}}
 
     # ---- energy spectrum (EnergyMode 1) ----
 
@@ -392,6 +446,97 @@ class Pulser:
         _S.set_fixed(self.d, energy_reg, ch=c)
         self._spectrum_ch.discard(c)
         return {"ch": c, "energy_reg": int(energy_reg)}
+
+    # ---- the third (correlated) channel ----
+    CH3 = 2          # the internal generator lives in register space ch = 2,
+                     # the same space the correlation registers sit in
+
+    def set_correlated_source(self, rate_hz=500.0, amplitude_v=1.0,
+                              poisson=False, hist=None, delay_ns=0.0,
+                              rise_us=None, decay_us=None, noise_mv=0.0):
+        """Inject the SAME event into both outputs from a third generator.
+
+        This is how the energy is correlated between the channels. The third
+        channel has its own rate and its own energy (fixed, or drawn from
+        `hist`), and every event it produces appears on CH1 and CH2 together.
+
+        Verified 2026-09-28: third channel at 500 Hz / 1.0 V gave 30 of 30
+        acquisitions with both outputs carrying it, CH1 mean 1.004 V and CH2
+        mean 0.985 V, in the same capture window.
+
+        Channel 3 is a full channel in the vendor's model, and DDE-Control
+        programs a SHAPE for it too: its configuration loop runs Update_Shape
+        over ChannelConfiguration[0..2]. Pass rise_us and decay_us to program
+        channel 3's own shape RAM the same way. Which shaper actually renders
+        the event -- channel 3's, or those of the two channels it emerges
+        through -- is not yet verified; see README section 9h.
+
+        This mode takes over BOTH channels: it sets every energy and timebase
+        mux to 2, so CH1 and CH2 stop using their own generators.
+        """
+        c = self.CH3
+        self.d.wr(_reg(c, R_TIMEMODE), 1 if poisson else 0)
+        self.d.wr(_reg(c, R_PERIOD), period_for_rate(rate_hz))
+        if poisson:
+            self.d.wr(_reg(c, R_ALPHA),
+                      int((2 ** 32) * 0.25 * rate_hz / CLOCK_HZ))
+            self.d.wr(_reg(c, R_TB_LFSR), 1)      # see R_TB_LFSR
+            self.d.wr(_reg(c, R_TB_LFSR), 0)
+        if rise_us is not None and decay_us is not None:
+            import tworegion
+            samples, corn, rf, tf, _info = tworegion.build(
+                rise_us * 1e-6, decay_us * 1e-6)
+            tworegion.program(self.d, samples, corn, rf, tf, ch=c)
+        if hist is not None:
+            import spectrum as _S
+            _S.program(self.d, hist, ch=c)
+        else:
+            reg = max(1, min(32767, int(round(
+                (amplitude_v - V_INTERCEPT) / V_PER_ENERGY))))
+            self.d.wr(_reg(c, R_ENERGY_MODE), 0)
+            self.d.wr(_reg(c, R_ENERGY_VAL), reg)
+            self.d.wr(_reg(c, R_ENERGY_STROBE), 1)
+            self.d.wr(_reg(c, R_ENERGY_STROBE), 0)
+        if noise_mv:
+            self.set_noise(noise_mv, ch=c)
+        info = self.set_correlation(CORR_CH3, delay_ns=delay_ns)
+        info.update(ch3_rate_hz=rate_hz,
+                    ch3_amplitude_v=None if hist is not None else amplitude_v,
+                    ch3_spectrum=hist is not None,
+                    ch3_rise_us=rise_us, ch3_decay_us=decay_us,
+                    ch3_noise_mv=noise_mv)
+        return info
+
+    # ---- baseline noise ----
+
+    def set_noise(self, rms_mv=0.0, ch=None, generator='a'):
+        """Add broadband noise to the baseline. 0 turns it off.
+
+        `generator` picks which of the two working sources to use: 'a' is the
+        finer one (3.55 uV rms per count, up to ~232 mV), 'b' is coarser and
+        stronger (10.7 uV per count). Both measured broadband -- the
+        sample-to-sample difference was ~1.65x the std, near the sqrt(2) of
+        uncorrelated noise, so neither is a slow drift.
+
+        The board has an intrinsic ~20 mV rms floor that this adds to in
+        quadrature, so very small requested values are swamped.
+        """
+        c = self.ch if ch is None else ch
+        reg, uv = ((R_NOISE_A, NOISE_A_UV_PER_COUNT) if generator == 'a'
+                   else (R_NOISE_B, NOISE_B_UV_PER_COUNT))
+        counts = max(0, min(NOISE_MAX_COUNT, int(round(rms_mv * 1000.0 / uv))))
+        self.d.wr(_reg(c, reg), counts)
+        # the gauss generator needs its LFSR started, as the timebase one does
+        self.d.wr(_reg(c, R_NOISE_GAUSS_LFSR), 1)
+        self.d.wr(_reg(c, R_NOISE_GAUSS_LFSR), 0)
+        return {"ch": c, "generator": generator, "register": hex(reg),
+                "counts": counts, "rms_mv_requested": rms_mv,
+                "rms_mv_achievable": counts * uv / 1000.0}
+
+    def noise_off(self, ch=None):
+        c = self.ch if ch is None else ch
+        for reg in (R_NOISE_A, R_NOISE_B):
+            self.d.wr(_reg(c, reg), 0)
 
     def delay_range_ns(self):
         """(min, max) delay the register can express, in ns at the output."""
@@ -503,7 +648,7 @@ class Pulser:
         # Preserve the correlation routing: a plain 0 here would silently drop
         # CH2 back onto its own timebase every time its pulse is reprogrammed.
         self.wr(R_TB_MUX, self._tb_mux_for(self.ch))
-        self.wr(R_EN_MUX, 0)
+        self.wr(R_EN_MUX, self._en_mux_for(self.ch))
 
         # energy - CORRECT addresses.
         # Preserve spectrum mode: writing mode 0 here would drop a channel that
@@ -523,6 +668,9 @@ class Pulser:
         self.wr(R_PERIOD, period)
         if poisson:
             self.wr(R_ALPHA, int((2 ** 32) * 0.25 * rate_hz / CLOCK_HZ))
+            # start the timebase random generator, or nothing comes out at all
+            self.wr(R_TB_LFSR, 1)
+            self.wr(R_TB_LFSR, 0)
         self.wr(R_DEADTIME, int(deadtime))
         self.wr(R_PARAL, 1 if paralyzable else 0)
 
