@@ -2,7 +2,7 @@
 
 The timebase and energy register families in linux/dt5810.py (and in all the
 project docs) carry one extra hex zero, so those writes have been landing 16x
-away from the real registers. See REGISTER_ADDRESS_BUG.md. That single error is
+away from the real registers. See docs/REGISTER_ADDRESS_BUG.md. That single error is
 why the rate looked "locked at 318 Hz" and why the energy argument never
 affected amplitude.
 

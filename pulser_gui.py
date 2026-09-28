@@ -16,7 +16,7 @@ offset, polarity bit and the whole shape geometry are derived from those; see
 README.md for the calibrations. CH2's analog stage is inverted relative to CH1,
 which is why the invert bit and the offset zero point differ between the panels.
 
-Uses the CORRECTED timebase and energy register addresses (REGISTER_ADDRESS_BUG.md):
+Uses the CORRECTED timebase and energy register addresses (docs/REGISTER_ADDRESS_BUG.md):
 the project's usual 0x0100000x / 0x020f000x carry an extra hex zero and land 16x
 away from the real registers, which is why rate and energy never responded.
 
@@ -416,7 +416,7 @@ class PulserWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage(
             "Gain, offset, polarity bit and shape geometry are all derived — "
-            "see README.md. Corrected register addresses (REGISTER_ADDRESS_BUG.md).")
+            "see README.md. Corrected register addresses (docs/REGISTER_ADDRESS_BUG.md).")
 
         self.scope_timer = QTimer(self)
         self.scope_timer.timeout.connect(self.poll_scope)

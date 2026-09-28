@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fix the extra-hex-zero register addresses across the project.
 
-See New_attemp_20260922/REGISTER_ADDRESS_BUG.md. The timebase and energy register
+See New_attemp_20260922/docs/REGISTER_ADDRESS_BUG.md. The timebase and energy register
 families were written with one extra hex zero, landing 16x away from the real
 register. This rewrites them BY VALUE rather than by text, because the correct and
 incorrect spellings differ by a single zero:

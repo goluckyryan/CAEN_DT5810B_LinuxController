@@ -15,7 +15,7 @@
 
 ## 1. Verdict up front
 
-**SUPERSEDED 2026-09-23 — see REGISTER_ADDRESS_BUG.md.** The rate was never
+**SUPERSEDED 2026-09-23 — see ../REGISTER_ADDRESS_BUG.md.** The rate was never
 uncontrollable; the project has been writing the timebase and energy registers to
 the wrong addresses (one extra hex zero, so 16× off). With the addresses the
 Windows DLL actually uses, four of the five parameters are met on the Pulser path

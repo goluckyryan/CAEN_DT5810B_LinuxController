@@ -1,46 +1,21 @@
-# Superseded working notes
+# Documentation
 
-**Nothing in this folder is authoritative. `../README.md` is.**
+The entry point is **`../README.md`** — the consolidated, current reference for
+the instrument. This folder holds the longer-form documents it points at.
 
-These are the chronological notes from 2026-09-22..24, written while the
-instrument was still being worked out. They are kept for one reason: they hold
-the raw evidence and, more usefully, the record of what was tried and did not
-work. Several of their conclusions were later **disproved** — by the time
-`../README.md` §9 was written, the register-address bug had been found and most
-of the earlier reasoning had to be re-examined.
-
-If a statement here disagrees with `../README.md`, the parent file wins.
-
-| file | what it is |
+| | |
 |---|---|
-| `FINDINGS.md` | register-level findings, labelled B1/C3/etc. The labels are still referenced from a few module docstrings |
-| `REPORT.md` | mode-by-mode test report; its own register findings point back at `FINDINGS.md` |
+| [`REGISTER_ADDRESS_BUG.md`](REGISTER_ADDRESS_BUG.md) | **Current and authoritative.** The extra-hex-zero discovery in full, with the disassembly evidence. `../README.md` §2 is the summary; this is the long form. |
+| [`superseded/`](superseded/) | **Not authoritative.** Chronological working notes from 2026-09-22..24, written before the bug above was found. Kept for their evidence and for the record of what was tried and failed. `superseded/README.md` lists which conclusions were disproved and why. |
 
-## What was wrong with them, specifically
+Two categories, deliberately separated: one document describes a bug in the
+*instrument code* and is correct; the folder beside it contains documents that
+were themselves *wrong*, and are kept as a record rather than a reference. They
+should not sit at the same level, and neither should sit next to `../README.md`.
 
-Both were written *before* the discovery that two register families carried one
-extra hex zero (`../REGISTER_ADDRESS_BUG.md`). Every experiment that swept a
-timebase or energy register before that fix was writing 16× away from the
-register it named, so:
+Elsewhere in the repo:
 
-* **"The rate is locked at 318 Hz and cannot be controlled."** False. The period
-  register was simply never being written. Rate is now verified flat to −0.0%
-  from 4 to 31 kHz.
-* **"The energy argument has no effect on amplitude."** False, same cause.
-  Amplitude is now linear in the energy register, `V = 3.414e-5 × reg + 0.0205`.
-* **Digital RC "produces nothing"** — the conclusion happens to have survived
-  re-testing, but the reasoning that produced it was invalid at the time, because
-  the energy register it depended on was misaddressed. Only the post-fix re-run
-  is worth quoting.
-
-A related failure mode runs through both files and is worth remembering: several
-"dead output" and "no pulse train" conclusions were **scope artifacts** — a 2 µs
-window looking for a 318 Hz signal, or 50 mV/div clipping a 1 V pulse. The
-instrument was working; the measurement was not. `../experiments/INDEX.md`
-flags which experiments are affected.
-
-## Still useful here
-
-* the USB capture analysis and protocol framing evidence
-* the mode-by-mode survey in `REPORT.md`, read alongside the corrections
-* the dead ends themselves, so they are not walked into a second time
+* `../experiments/INDEX.md` — all 26 numbered experiments, each marked valid,
+  confounded, or superseded
+* `../reference/README.md` — the vendor traces captured from the Windows
+  software, and the precision caveats that apply to them

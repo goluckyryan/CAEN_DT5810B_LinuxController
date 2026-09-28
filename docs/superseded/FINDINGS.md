@@ -4,7 +4,7 @@
 > order (C2, C5, C4, C3, C) and several conclusions below were later DISPROVED:
 >
 > * **B6** ("the 318 Hz lock is the library hardcoding the period") — wrong; it
->   was the register-address bug, see `REGISTER_ADDRESS_BUG.md`.
+>   was the register-address bug, see `../REGISTER_ADDRESS_BUG.md`.
 > * **A1** (`TransistorReset` = pulsed reset as "the headline" fix) — a real bug,
 >   but not the blocker; fixing it does not make Digital RC work.
 > * **C2/C3** conclusions about Digital RC — the tests were confounded by the
