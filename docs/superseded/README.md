@@ -37,7 +37,8 @@ A related failure mode runs through both files and is worth remembering: several
 "dead output" and "no pulse train" conclusions were **scope artifacts** — a 2 µs
 window looking for a 318 Hz signal, or 50 mV/div clipping a 1 V pulse. The
 instrument was working; the measurement was not. `../../experiments/INDEX.md`
-flags which experiments are affected.
+flags which experiments are affected (that folder is gitignored — it is on the
+lab machine, not in the repo).
 
 ## Still useful here
 

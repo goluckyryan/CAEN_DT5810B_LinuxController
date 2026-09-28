@@ -752,7 +752,7 @@ approach drives FAST outside its design domain. `DT_GetShapeMode` is pure manage
 | `shaperam.py` | shape-RAM packing helpers |
 | `scope.py` | strictly read-only scope access (only `:TRIG:EDGE:LEV` may be written) |
 | `analyse_trace.py` | waveform capture and shape characterisation |
-| `experiments/` | lab scratch work — **not tracked in git** (see `.gitignore`), kept on disk. `INDEX.md` *is* tracked and says what each experiment proved and which are confounded |
+| `experiments/` | lab scratch work — **not in the repo** (`.gitignore`), kept on the lab machine. Its `INDEX.md` says what each experiment proved and which are confounded; the numbered scripts are the evidence behind §9 |
 | `tools/fix_register_addresses.py` | the one-shot address rewriter (already applied) |
 | `docs/REGISTER_ADDRESS_BUG.md` | the §2 discovery in full, with evidence |
 | `docs/superseded/` | working notes written before that bug was found — kept for their evidence and dead ends; its `README.md` lists which conclusions were disproved |

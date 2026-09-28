@@ -17,12 +17,10 @@ venv/
 backup_pre_addrfix/
 
 # Lab scratch work: the 26 numbered experiments, the superseded deliverables and
-# the AWG pair. They are the evidence README.md rests on and are kept on disk,
-# but they are not part of the shipped software and change constantly. INDEX.md
-# is the exception -- it records which experiment proved what and which were
-# confounded, so it stays tracked and README.md can keep pointing at it.
-experiments/*
-!experiments/INDEX.md
+# the AWG pair. This is the evidence the findings rest on and it stays on the lab
+# machine, but none of it is part of the shipped software. The whole folder is
+# untracked, INDEX.md included -- the docs still cite it, as a local file.
+experiments/
 
 # Scope/USB captures produced by running the experiments. The vendor reference
 # traces in reference/*.json ARE tracked: they are measured ground truth that

@@ -13,9 +13,10 @@ Two categories, deliberately separated: one document describes a bug in the
 were themselves *wrong*, and are kept as a record rather than a reference. They
 should not sit at the same level, and neither should sit next to `../README.md`.
 
-Elsewhere in the repo:
+Related indexes elsewhere:
 
 * `../experiments/INDEX.md` — all 26 numbered experiments, each marked valid,
-  confounded, or superseded
+  confounded, or superseded. Not in the repo: `experiments/` is gitignored and
+  lives on the lab machine only
 * `../reference/README.md` — the vendor traces captured from the Windows
   software, and the precision caveats that apply to them
