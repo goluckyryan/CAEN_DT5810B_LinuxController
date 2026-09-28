@@ -2,7 +2,11 @@
 
 Every experiment run 2026-09-22..24, in order, with what it actually established.
 Kept because the findings in `../README.md` rest on them. None of these are needed
-to use the instrument — `../pulser.py` and `../awg_backend.py` are the product.
+to use the instrument — `../pulser.py` and the modules beside it are the product.
+
+**This folder is not tracked in git** (see `../.gitignore`); it lives on the lab
+machine only. This index is the exception, so the evidence trail in
+`../README.md` stays readable from the repo.
 
 They import the production modules from the parent directory (a `sys.path` line was
 added when they were archived), so they still run from here. All of them need the
@@ -45,6 +49,7 @@ Superseded deliverables, kept for reference:
 | `deliver_pulse_awg.py` | first AWG delivery; superseded by `../awg_backend.py` |
 | `make_pulse.py` | earliest attempt, contains the auto-calibration loop that chased noise |
 | `dt5810_drc.py` | early clean-room DRC implementation; DRC never produced output |
+| `awg_gui.py` / `awg_backend.py` | **AWG mode** — works, but loops so it has no statistics, baseline pinned at −0.14 V, chunk glitches every ~2048 samples. Superseded by Pulser mode for every detector-emulator purpose |
 | `fastshape.py` | first port of the vendor IIR rise filter (DDE-Control.cs 12921-12950); `../tworegion.py` reimplements it and is what runs |
 
 ## The two lessons these encode

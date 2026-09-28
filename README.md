@@ -19,8 +19,7 @@ Rigol DHO4804 at 1 MΩ. Everything below was measured on this setup,
 ```bash
 ~/caen_signal_emulator/pdu/pduOnOff.sh on 3          # power (PDU load 3)
 python3 ~/caen_signal_emulator/linux/fx3_firmware_loader.py   # 000d -> 000e
-python3 pulser_gui.py        # detector-emulator GUI  (recommended)
-python3 awg_gui.py           # arbitrary-waveform GUI
+python3 pulser_gui.py        # detector-emulator GUI -- this is the software
 ```
 
 Headless, the reference signal (1 kHz, 1 V, 100 ns rise, 50 µs decay, 0 V base):
@@ -242,9 +241,21 @@ Poisson statistics and pile-up. Reference signal verified:
 | rise 10-90 | 102 ns | 100 ns |
 | decay τ | 49.4 µs | 50 µs |
 
-**AWG** — arbitrary waveforms at any rate, 1 Hz to 100 kHz within 0.16%. Good for
-function-generator work; not a detector emulator (it loops, so no statistics) and
-it has visible chunk-boundary glitches every ~2048 samples.
+**AWG** — *secondary; moved to `experiments/` and no longer part of the shipped
+software.* Arbitrary waveforms at any rate, 1 Hz to 100 kHz within 0.16% — sine,
+square, triangle, sawtooth, sinc, noise, DC. Useful as a bench function
+generator and nothing more: it is **not** a detector emulator, because it loops
+a fixed array and so has no statistics by construction. Two unsolved defects:
+the baseline is pinned at ≈ −0.14 V and will not move, and there are visible
+chunk-boundary glitches every ~2048 samples. Run it with
+`python3 experiments/awg_gui.py`.
+
+Note that the Pulser shape RAM is a general 4096-sample array —
+`tworegion.program()` takes whatever samples it is given, and we only ever feed
+it the exponential builder. Arbitrary waveforms *with* triggered statistics are
+therefore already reachable on the Pulser path; that would make AWG redundant
+even as a function generator, and it is the obvious place to go if the need
+arises.
 
 **Both channels together** — CH1 and CH2 each with their own amplitude, shape,
 polarity and baseline (CH2's analog stage is inverted; §9d). With the correlation
@@ -735,13 +746,13 @@ approach drives FAST outside its design domain. `DT_GetShapeMode` is pure manage
 | `pulser.py` / `pulser_gui.py` | **Pulser mode** — corrected registers, the working path. The GUI is a panel per channel; each runs independently |
 | `spectrum.py` | **Energy spectrum mode** — histogram → cumulative → spectrum RAM, plus builders (Gaussian, flat, delta, CSV) |
 | `shaperam.py` / `analyse_trace.py` | shape-RAM helper used by `pulser.py`; trace analysis used by the experiments |
-| `awg_backend.py` / `awg_gui.py` | **AWG mode** |
+| `experiments/awg_backend.py` / `awg_gui.py` | **AWG mode** — moved out of the shipped set, see §6 |
 | `tworegion.py` | two-region interpolated shape builder (arbitrary rise + long tail) |
 | `fastshape.py` | vendor FAST formula, ported verbatim |
 | `shaperam.py` | shape-RAM packing helpers |
 | `scope.py` | strictly read-only scope access (only `:TRIG:EDGE:LEV` may be written) |
 | `analyse_trace.py` | waveform capture and shape characterisation |
-| `experiments/` | every experiment run, with `INDEX.md` saying what each one proved and which are confounded |
+| `experiments/` | lab scratch work — **not tracked in git** (see `.gitignore`), kept on disk. `INDEX.md` *is* tracked and says what each experiment proved and which are confounded |
 | `tools/fix_register_addresses.py` | the one-shot address rewriter (already applied) |
 | `docs/REGISTER_ADDRESS_BUG.md` | the §2 discovery in full, with evidence |
 | `docs/superseded/` | working notes written before that bug was found — kept for their evidence and dead ends; its `README.md` lists which conclusions were disproved |
