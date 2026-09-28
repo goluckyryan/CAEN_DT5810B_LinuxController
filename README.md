@@ -1,9 +1,11 @@
 # DT5810B on Linux — consolidated reference
 
 **This file is the entry point and the current, corrected state of knowledge.**
-`FINDINGS.md` and `REPORT.md` are chronological working notes kept for their
-evidence and dead ends; several of their early conclusions were later disproved
-(each is flagged in §9). Where they disagree with this file, this file wins.
+`docs/` holds the chronological working notes (`FINDINGS.md`, `REPORT.md`),
+kept for their evidence and for the record of what was tried and failed. Several
+of their early conclusions were later disproved — each is flagged in §9, and
+`docs/README.md` lists the main ones. Where they disagree with this file, this
+file wins.
 
 Board: CAEN / Nuclear Instruments DT5810B, USB `21e1:000e`, CH1 and CH2 into a
 Rigol DHO4804 at 1 MΩ. Everything below was measured on this setup,
@@ -741,7 +743,7 @@ approach drives FAST outside its design domain. `DT_GetShapeMode` is pure manage
 | `experiments/` | every experiment run, with `INDEX.md` saying what each one proved and which are confounded |
 | `tools/fix_register_addresses.py` | the one-shot address rewriter (already applied) |
 | `REGISTER_ADDRESS_BUG.md` | the §2 discovery in full, with evidence |
-| `FINDINGS.md`, `REPORT.md` | chronological working notes — see the warning at the top of this file |
+| `docs/` | **superseded working notes** — `FINDINGS.md`, `REPORT.md`, and a `README.md` saying which of their conclusions were disproved and why |
 
 Scope rule: Ryan drives the scope. `scope.py` enforces it — queries plus
 `:TRIG:EDGE:LEV` only, everything else raises.

@@ -1,6 +1,6 @@
 """Shape-RAM (memory-based) pulse generation for the DT5810B.
 
-This is the path that actually drives the DAC (see FINDINGS.md C3: Digital RC
+This is the path that actually drives the DAC (see docs/FINDINGS.md C3: Digital RC
 produces nothing even on a cold board). Manual calls it "Exponential - Fast" /
 custom shape, sec 10 "Custom Shape - Memory Based data-path".
 

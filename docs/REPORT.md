@@ -195,7 +195,7 @@ My recommendation is **B if you can patch a cable, A otherwise.**
 | `analyse_trace.py` | waveform capture and shape characterisation |
 
 Full background, including the corrected understanding of the datapaths and the
-register-level findings, is in `FINDINGS.md`.
+register-level findings, is in `FINDINGS.md` (same folder).
 
 ---
 

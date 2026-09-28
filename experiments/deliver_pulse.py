@@ -2,7 +2,7 @@
 """Deliver the requested pulse: 1 V, 1 us rise, 100 us decay.
 
 Uses the SHAPE-RAM (memory) datapath -- the only one that drives the DAC on this
-board (Digital RC produces nothing, see FINDINGS.md C3).
+board (Digital RC produces nothing, see ../docs/FINDINGS.md C3).
 
 Knobs, all established by measurement on 2026-09-23:
   width_us   shape window; 600 us makes one RAM sample ~= 700 ns
@@ -13,7 +13,7 @@ Knobs, all established by measurement on 2026-09-23:
              tail, so decay_us must be compensated.
   gain       0x0f000001, linear on amplitude
 
-RATE IS NOT CONTROLLABLE. See FINDINGS.md: the period register 0x01000009, the
+RATE IS NOT CONTROLLABLE. See ../docs/FINDINGS.md: the period register 0x01000009, the
 alpha register 0x01000006, TimeMode, the LFSR strobe and the deadtime registers
 were all swept with no effect; the rate stays at its fixed ~318 Hz. The 1 kHz
 part of the request is NOT met.

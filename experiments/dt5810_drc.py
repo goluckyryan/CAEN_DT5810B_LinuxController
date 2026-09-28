@@ -1,7 +1,7 @@
 """DT5810B Digital RC pulse generator - clean implementation from the manual.
 
 Written 2026-09-22 for New_attemp_20260922. Does NOT inherit the assumptions in
-linux/dt5810.py; see FINDINGS.md for what was wrong with that one.
+linux/dt5810.py; see ../docs/FINDINGS.md for what was wrong with that one.
 
 Datapath (manual UM5312 rev5 sec 10 "Shape Datapath", sec 12 "Signal Shape"):
 

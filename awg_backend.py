@@ -1,7 +1,7 @@
 """DT5810B AWG-mode backend.
 
 Everything the AWG needs, with the behaviour established by measurement on
-2026-09-22/23. See REPORT.md and FINDINGS.md for the evidence.
+2026-09-22/23. See docs/REPORT.md and docs/FINDINGS.md for the evidence.
 
 FACTS THAT SHAPE THIS API
 -------------------------

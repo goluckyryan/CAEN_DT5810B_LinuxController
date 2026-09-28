@@ -260,7 +260,7 @@ class AwgWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage(
             f"AWG baseline is fixed at about {BASELINE_V:+.2f} V and cannot be "
-            f"moved — see REPORT.md")
+            f"moved — see docs/REPORT.md")
 
         self.scope_timer = QTimer(self)
         self.scope_timer.timeout.connect(self.poll_scope)

@@ -217,4 +217,4 @@ d.close()
 sc.close()
 
 print("\n" + "=" * 78)
-print("summary written by the caller; see REPORT.md")
+print("summary written by the caller; see ../docs/REPORT.md")
