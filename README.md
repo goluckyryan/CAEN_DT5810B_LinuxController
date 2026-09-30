@@ -8,9 +8,24 @@ conclusions were later disproved; each is flagged in §9, and
 `docs/superseded/README.md` lists the main ones. Where they disagree with this
 file, this file wins.
 
-Board: CAEN / Nuclear Instruments DT5810B, USB `21e1:000e`, CH1 and CH2 into a
-Rigol DHO4804 at 1 MΩ. Everything below was measured on this setup,
-2026-09-22..28.
+## 0. Naming — two instruments, never one word for both
+
+| term | means | never call it |
+|---|---|---|
+| **emulator**, or **DT5810B** | CAEN / Nuclear Instruments DT5810B, USB `21e1:000e`, PDU load 3. Generates the pulse. | ~~board~~ |
+| **scope**, or **DHO4804** | Rigol DHO4804, `192.168.2.200:5555`, CH1/CH2 at 1 MΩ. Measures the pulse. | ~~board~~ |
+| **PDU** | PADM20 at `192.168.203.29`, powers the emulator | |
+
+**Do not write "board".** It read as either instrument and caused a real
+misunderstanding (2026-09-29). The word is gone from this repository; the sole
+survivor is the API method `DT5810.board_id()`, kept only because
+`../dt5810_gui.py` and `../dt5810_mcp.py` call it.
+
+Note the scope is **DHO**4804 — letter O, "Digital High-resolution
+Oscilloscope" — not DH0/zero. Confirmed from `*IDN?`:
+`RIGOL TECHNOLOGIES,DHO4804,HDO4A262900576,00.02.13`.
+
+Everything below was measured on this setup, 2026-09-22..29.
 
 ---
 
@@ -39,7 +54,7 @@ p.set_pulse(rate_hz=1000, amplitude_v=0.6, decay_us=50, rise_us=0.1, ch=1)
 p.set_correlation(CORR_TIMEBASE, delay_ns=250)
 ```
 
-After a cold power-up the FX3 firmware is volatile and the board comes up at
+After a cold power-up the FX3 firmware is volatile and the emulator comes up at
 `21e1:000d`; the loader must run before anything else works.
 
 ---
@@ -206,7 +221,7 @@ different byte alignments, not two distinct markers. Verification must be done o
 the analog output.
 
 **`board_id()` is a red herring** — it never returns `0x1005810B` even on a
-perfectly working board. Do not use it as a liveness check.
+perfectly working emulator. Do not use it as a liveness check.
 
 ---
 
@@ -221,7 +236,7 @@ At gain 1184, 1 MΩ, CH0.
 | baseline | `3.234e-5 V/count`; `offset = -55512` → 0 V | 0/−20000/−55465 → 1.809/1.174/0.026 V |
 | CH2 baseline | `3.401e-5 V/count`; `offset = +58371` → 0 V | −30000/0/+30000 → −2.999/−1.986/−0.958 V |
 | CH1→CH2 delay | `0.800 ns/count`, zero at register 48 | 3.200 µs over 4000 counts; residual flat, mean error +2.0 ns |
-| decay | `DECAY_SCALE = 1.048` (request τ/1.048) | 20/50/100/200 µs all within 10% |
+| decay | **additive**: program `request − 3.86 µs` | 10/20/50/100/200 µs → +7.8/−3.3/−1.2/−1.3/+0.2 % (§9l) |
 | rise | region spans `N_TAU = 4` tau, past the peak; array ≤254 samples, write n/2 | 100→179, 200→350, 500→836, 1000→1414, 2000→2329 ns (runs 1.2-1.8x long) |
 | interpolation step | **3.2 ns** = 1/312.5 MHz, one quarter-clock tick | from `interp = width_us/3.185` |
 | AWG rate | `312.5e6 / (DataLen × ClockPerStep)` | DataLen 1008/CPS 31 → 10000 Hz |
@@ -358,7 +373,7 @@ constant is 20 ns.
 
 The single most useful thing in this work: comparing our output against the
 **vendor reference traces** in `reference/` (the Windows software driving this same
-board) found two real bugs that no amount of reasoning had.
+emulator) found two real bugs that no amount of reasoning had.
 
 ### Bug 1 — we rendered only half the curve
 
@@ -452,7 +467,7 @@ to half of what the array was built for.
 The cost is rise-time accuracy: ratios are now **1.16-1.79** over 100 ns - 2 µs
 (they were 0.96-1.75 before the corner-unit change, and a mix of measurements
 earlier in the session suggested 0.94-1.24, which was almost certainly optimistic
-— some of those runs were on a partly-wedged board).
+— some of those runs were on a partly-wedged DT5810B).
 
 So the shape is right and the magnitude needs a scale trim. That is the remaining
 work on the rise, and it is a one-parameter fit rather than a structural problem.
@@ -610,14 +625,14 @@ sentinel. Hence the edge-time method above.
 
 ## 9f. Energy spectrum mode (2026-09-28) ⭐
 
-Instead of one fixed amplitude per pulse (`EnergyMode 0`), the board can draw
+Instead of one fixed amplitude per pulse (`EnergyMode 0`), the emulator can draw
 each pulse's height from a user-supplied distribution (`EnergyMode 1`). This is
 what makes it a *source* emulator rather than a pulser.
 
 ### How the hardware does it
 
 Manual §10, "From custom distributions to a set of values": a LUT-SR
-pseudo-random generator produces a uniform 32-bit number and the board finds
+pseudo-random generator produces a uniform 32-bit number and the emulator finds
 which bin of the stored **cumulative** spectrum brackets it. Bin heights are
 therefore probabilities — a bin twice as tall is drawn twice as often — and the
 cumulative form means one memory cell per bin suffices.
@@ -819,7 +834,7 @@ output is not a connector: it reaches the outside world *through* CH1 and CH2.
 | channel 3 has its **own noise generator** | ✅ the vendor's Noise form is unrestricted for it |
 | channel 3 has its own baseline drift | ✅ programmed by the vendor; drift itself unexplored |
 | which shaper renders a ch3 event | ❓ still unverified |
-| whether ch3 noise/baseline reach the outputs | ❓ not yet measured (board down) |
+| whether ch3 noise/baseline reach the outputs | ❓ not yet measured (emulator down) |
 
 ```python
 p.set_correlated_source(rate_hz=500, amplitude_v=1.0)          # fixed
@@ -867,7 +882,7 @@ for the longer decays. Still owed.
 
 What *is* settled is that **channel 3 has a shape generator of its own**, and
 the vendor programs it. `DDE-Control` allocates
-`ChannelConfiguration[NChannels + 1]` — three channels for a two-channel board
+`ChannelConfiguration[NChannels + 1]` — three channels for a two-channel emulator
 — and its configuration loop runs `Update_Generals`, `Update_Energy`,
 `Update_Shape`, `Update_Shape_Custom` and `Update_Timebase` over all three,
 channel 2 included. The `ReducedChannel` flag it sets on channel 2 strips only
@@ -892,7 +907,7 @@ CH1 and CH2 panels is independent per channel. For coincidence work that is the
 difference between correlated and uncorrelated noise on the pair.
 
 `set_correlated_source(noise_mv=...)` programs it, and the GUI exposes a Noise
-row on the channel-3 panel. **Neither is verified on hardware** — the board
+row on the channel-3 panel. **Neither is verified on hardware** — the emulator
 froze before it could be measured. Baseline *drift* (`ConfigureBaselineDrift`)
 remains unexplored for every channel, not just this one.
 
@@ -929,7 +944,7 @@ This had been silently broken for the whole project, and `pulser_gui.py` has
 offered a Poisson timebase the entire time. It went unnoticed because nothing
 ever tested it against the scope: the mode was selected, no pulses came out, and
 that is indistinguishable from the many other "no output" states seen along the
-way. Same lesson as §9e and §9f — for this board, setting the mode register is
+way. Same lesson as §9e and §9f — for this DT5810B, setting the mode register is
 never the whole story.
 
 ---
@@ -971,7 +986,7 @@ Both are **broadband, not drift**: the sample-to-sample difference measured
 behaves like a slow wander, so the random-walk and flicker generators are
 presumably the two that were not found.
 
-`0x1400000` is linear to better than 5 % across the whole range. The board has
+`0x1400000` is linear to better than 5 % across the whole range. The emulator has
 an intrinsic **~20 mV rms floor** that adds in quadrature:
 
 | asked | predicted with floor | measured |
@@ -1009,11 +1024,11 @@ it. This is the map of what is left.
 | `ConfigureDRC` | ❌ produces no output; clean negative, re-proved after the address fix |
 | `ConfigureBaselineDrift` | ❌ **not explored** — `(nodes[], length, interp_slow, interp_fast, reconfigure, enable, reset)`, a node-interpolated baseline wander |
 | `ConfigureMultishape` | ❌ **not explored** — `(prob2, prob3, prob4, enable)`, picks among shape slots by probability. We program all 16 slots identically, so this is free capability |
-| `ConfigureTR` | ❌ **not explored** — pulsed/transistor reset, and `FEAT_PULSED_RESET` *is* declared for this board |
+| `ConfigureTR` | ❌ **not explored** — pulsed/transistor reset, and `FEAT_PULSED_RESET` *is* declared for this DT5810B |
 | sequence modes | ❌ **not explored** — `EnergyMode 2` / `TimeMode 2`, with `FEAT_SEQUENCE_AMP` and `FEAT_SEQUENCE_TIME` declared |
 | `ConfigureDIO` / `SetDIO` | ❌ not explored — digital I/O and external trigger (`TimebaseMux = 4`) |
 | `GetSignalLoopback` | ❌ not explored — **would read the generated signal back over USB**, i.e. verification without the scope |
-| `DPP_*`, `MCA_ReadPreview` | ❌ not explored — the board can *digitise* an input (`FEAT_ANALOG_IN`) |
+| `DPP_*`, `MCA_ReadPreview` | ❌ not explored — the emulator can *digitise* an input (`FEAT_ANALOG_IN`) |
 | HV channel | ❌ not explored (`FEAT_HVCH`) |
 | flash / activation / security | ❌ deliberately untouched |
 
@@ -1022,6 +1037,52 @@ slots are already programmed and only the selection probabilities are missing,
 and **`GetSignalLoopback`**, because reading the generated waveform back over
 USB would remove the scope from the verification loop entirely — and most of the
 wrong turns in this project were scope artifacts.
+
+---
+
+## 9l. The decay correction was never connected (2026-09-30)
+
+Two faults, one masking the other.
+
+**`compensate_decay` did nothing.** `_apply()` computed `req_decay` and then
+built the shape with `tworegion.build(rise_us, decay_us)` — the *raw* request.
+Only the legacy bare-exponential branch used `req_decay`, and nothing uses that
+branch. So `DECAY_SCALE` had no effect on any pulse this software has produced.
+
+**And the correction was the wrong shape anyway.** Sweeping the request and
+fitting each whole trace:
+
+| requested | 10 | 20 | 50 | 100 | 200 µs |
+|---|---|---|---|---|---|
+| measured | 15.06 | 23.55 | 53.60 | 102.76 | 204.74 µs |
+
+Least squares gives **measured = 1.001 × requested + 3.86 µs**. The slope is
+unity to 0.1 %: the error is a constant **additive** offset, not a scale
+factor. `DECAY_SCALE = 1.048` was fitted at 50 µs alone, where a 4 µs offset
+does look like a 1.08 multiplier — but it is badly wrong elsewhere, and a 10 µs
+request came out at 15 µs, a 50 % error.
+
+Fixed by subtracting `DECAY_OFFSET_US = 3.86` before programming, and by
+passing `req_decay` to the two-region builder. Verified:
+
+| requested | 10 | 20 | 50 | 100 | 200 µs |
+|---|---|---|---|---|---|
+| measured | 10.78 | 19.34 | **49.39** | 98.70 | 200.39 µs |
+| error | +7.8 % | −3.3 % | −1.2 % | −1.3 % | +0.2 % |
+
+Worst case 7.8 % at the short end, against 50 % before.
+
+**This also settles the 52.9 vs 49.4 µs disagreement** in
+`docs/letsClaw_finding.md` §7 and §10.2. Both numbers were right: 52.9–53.6 µs
+is what an *uncompensated* 50 µs request produces, which is what the software
+was actually doing, and 49.4 µs is what it produces once the compensation is
+connected. The measurements never conflicted — the code did not do what both
+documents said it did.
+
+Measurement method throughout: 0.5 V/div (1 V needs ≥ 1/4.34 div), timebase
+from `zoom.timebase(goal="decay")`, clipping confirmed absent from the ADC
+codes, and the decay taken from a 5-parameter whole-trace fit rather than a
+1/e crossing — all per `docs/letsClaw_finding.md` §3-§6.
 
 ---
 
@@ -1068,8 +1129,10 @@ beside it on disk but are gitignored, and are marked *(local)*.
 
 | path | purpose |
 |---|---|
+| `AGENTS.md` | **read first** — working rules, what lives outside this repo, and the verification loop |
 | `README.md` | this file — the authoritative reference |
 | `docs/REGISTER_ADDRESS_BUG.md` | the §2 discovery in full, with the disassembly evidence |
+| `docs/letsClaw_finding.md` | scope control and pulse fitting (2026-09-29/30): write whitelist, measured scope geometry, edge-vs-decay framing, ADC-code clipping check, the 5-parameter pulse fit, and the amplitude dead-band below ~0.3 V |
 | `docs/superseded/` | working notes written before that bug was found; its `README.md` lists which conclusions were disproved |
 | `reference/` | vendor traces captured from the Windows software — measured ground truth for §9b |
 

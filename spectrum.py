@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Energy-spectrum mode for the DT5810B: emit amplitudes drawn from a histogram.
 
-Instead of one fixed energy per pulse (EnergyMode 0), the board can draw each
+Instead of one fixed energy per pulse (EnergyMode 0), the emulator can draw each
 pulse's amplitude from a user-supplied distribution (EnergyMode 1). This is what
 makes it a source emulator rather than a pulser.
 
 HOW THE HARDWARE DOES IT (manual sec 10 "From custom distributions to a set of
 values"): a LUT-SR pseudo-random generator produces a uniform 32-bit number, and
-the board finds which bin of the stored CUMULATIVE spectrum brackets it. Bin
+the emulator finds which bin of the stored CUMULATIVE spectrum brackets it. Bin
 widths are therefore probabilities: a bin twice as tall is drawn twice as often.
 Only one memory cell per bin is needed because the cumulative form is stored.
 

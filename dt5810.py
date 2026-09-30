@@ -235,7 +235,7 @@ class DT5810:
         return self
 
     def board_id(self):
-        # Clean board-id string. Raw read is noisy (0xffffabba 'no-data' markers);
+        # Clean board_id() string. Raw read is noisy (0xffffabba 'no-data' markers);
         # scan the stream for the real model word 0x1005810B and report it readably.
         for _ in range(4):                      # retry (read is flaky)
             self.wr(0xFFFF0000, 0xFF)
@@ -501,7 +501,7 @@ class DT5810:
 if __name__ == '__main__':
     import sys
     # Minimal CLI smoke test (touches the live device). Usage:
-    #   python3 dt5810.py                 -> bringup + board id
+    #   python3 dt5810.py                 -> bringup + board_id()
     #   python3 dt5810.py detector        -> set_detector_pulse(300,50,1.0)
     #   python3 dt5810.py awg_pulse       -> set_awg_pulse(1000,50,1.0)
     #   python3 dt5810.py awg_wave sine   -> set_awg_wave('sine',1000,1.0)

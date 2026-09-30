@@ -216,7 +216,7 @@ def program(dev, samples, corner, rise_factor, tail_factor, ch=0,
                              word[u+2] = shape[8u+4] << 16 | shape[8u]
                          and 0x50f003 = (length >> 3) + 3
 
-    Defaults reproduce the sequence that is known to work on this board.
+    Defaults reproduce the sequence that is known to work on this DT5810B.
     """
     rf = max(1, int(rise_factor))
     tf = max(1, int(tail_factor))

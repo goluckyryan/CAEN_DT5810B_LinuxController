@@ -1,4 +1,4 @@
-# Vendor reference captures — Windows DDE-Control driving the board
+# Vendor reference captures — Windows DDE-Control driving the emulator
 
 Captured 2026-09-24 with the emulator driven by the **Windows** software, so these
 are ground truth for what the instrument can actually do. Our Linux implementation

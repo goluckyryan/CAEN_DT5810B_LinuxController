@@ -51,7 +51,7 @@ R_NOISE_A = 0x1400000     # in the LFSR_NOISE_GAUSS family (LFSR at 0x1400009)
 R_NOISE_B = 0x1700002     # a second, stronger broadband generator
 R_NOISE_GAUSS_LFSR = 0x1400009
 R_NOISE_RW_LFSR = 0x1900003
-# Measured 2026-09-28 on the baseline, board floor 20.1 mV rms subtracted in
+# Measured 2026-09-28 on the baseline, emulator floor 20.1 mV rms subtracted in
 # quadrature. Both linear to better than 5% over the full range:
 NOISE_A_UV_PER_COUNT = 3.55      # 65535 -> 232 mV rms
 NOISE_B_UV_PER_COUNT = 10.68     # 40000 -> 427 mV rms
@@ -105,7 +105,7 @@ _CORR_SETUP = {
 # Measured 2026-09-25 (t24): 3.200 us of shift over 4000 counts = 0.800 ns per
 # count, i.e. one 1.25 GS/s DAC sample. The manual quotes 1 ns for the 1 GS/s
 # model, and the DLL's counts = delay_us * 1000 * F / 250e6 gives exactly this
-# for F = 312.5 MHz, the board's quarter clock.
+# for F = 312.5 MHz, the emulator's quarter clock.
 DELAY_NS_PER_COUNT = 0.800
 # At register 0 the outputs are NOT aligned: CH2 leads by a fixed ~77 ns of
 # pipeline skew, so this is the register value that actually lines them up.
@@ -125,7 +125,19 @@ V_INTERCEPT = 0.0635      # 0.0205 + 0.043 closed-loop trim (2026-09-24):
 V_PER_OFFSET = 3.234e-5
 DEFAULT_GAIN = 1184
 DEFAULT_OFFSET = -55512     # puts the baseline on 0 V at the above gain
-DECAY_SCALE = 1.048         # measured tau / requested decay_us at width_us=300
+# Decay correction. Measured 2026-09-30 by sweeping the request and fitting the
+# whole trace (5-parameter shaped exponential, scope framed per decay):
+#     requested  10   20    50     100     200 us
+#     measured   15.06 23.55 53.60 102.76 204.74 us
+# Least squares over those five: measured = 1.001 x requested + 3.86 us.
+# The slope is unity to 0.1% -- the error is a constant ADDITIVE offset, not a
+# scale. The old DECAY_SCALE = 1.048 multiplier was fitted at 50 us only, where
+# a 4 us offset happens to look like a 1.08 factor; it barely moved the result
+# there (53.18 us uncompensated vs 53.48 compensated) and was badly wrong at
+# short decays, where a 10 us request came out 15 us.
+DECAY_OFFSET_US = 3.86      # subtract this from the request before programming
+DECAY_MIN_US = 0.5          # below the offset there is nothing left to program
+DECAY_SCALE = 1.048         # DEPRECATED, retained so old callers still import
 
 
 def period_for_rate(rate_hz):
@@ -164,6 +176,15 @@ BASELINE_AT_DEFAULT = -0.099            # V at DEFAULT_GAIN / DEFAULT_OFFSET.
 ENERGY_HEADROOM = 30000                 # keep the energy register below this
 GAIN_MIN, GAIN_MAX = 900, 3000          # measured-linear region
 
+# Below this the emulator emits NOTHING -- not a small pulse, nothing at all.
+# Measured 2026-09-30 at a verified-good 0.2 V/div frame: 0.15/0.20/0.25 V all
+# gave VPP 0.022-0.026 V (the noise floor), 0.30 V gave 0.258 V, 0.50 V gave
+# 0.461 V. Consistent with section 5, where the amplitude law is only linear
+# over energy_reg 4000..30000; 0.1 V needs reg ~1069, far under the floor.
+# auto_gain() used to accept such requests and return a silent nothing.
+AMPLITUDE_FLOOR_V = 0.30
+ENERGY_REG_FLOOR = 4000                 # bottom of the measured-linear region
+
 
 def auto_gain(amplitude_v):
     """Pick the digital gain for a requested amplitude.
@@ -172,7 +193,19 @@ def auto_gain(amplitude_v):
     that is the physically meaningful knob (pulse height proportional to energy).
     Gain is only raised when energy alone cannot reach the requested amplitude.
     Returns (gain, energy_reg, extrapolating).
+
+    Raises ValueError below AMPLITUDE_FLOOR_V. That used to return quietly and
+    the emulator then emitted nothing at all, which looks exactly like a dead
+    output and cost real bench time to diagnose. Failing loudly is the point.
     """
+    if amplitude_v < AMPLITUDE_FLOOR_V:
+        raise ValueError(
+            f"amplitude {amplitude_v:g} V is below the {AMPLITUDE_FLOOR_V} V "
+            f"floor: the emulator emits nothing at all down there, not a small "
+            f"pulse (measured 0.15/0.20/0.25 V -> 0.022-0.026 V, i.e. noise). "
+            f"The amplitude law is only linear over energy_reg "
+            f"{ENERGY_REG_FLOOR}..{ENERGY_HEADROOM}. Raise the amplitude, or "
+            f"lower the analog gain and drive a bigger energy value.")
     reg = int(round((amplitude_v - V_INTERCEPT) / V_PER_ENERGY))
     if reg <= ENERGY_HEADROOM:
         return DEFAULT_GAIN, max(1, reg), False
@@ -518,7 +551,7 @@ class Pulser:
         sample-to-sample difference was ~1.65x the std, near the sqrt(2) of
         uncorrelated noise, so neither is a slow drift.
 
-        The board has an intrinsic ~20 mV rms floor that this adds to in
+        The emulator has an intrinsic ~20 mV rms floor that this adds to in
         quadrature, so very small requested values are swamped.
         """
         c = self.ch if ch is None else ch
@@ -578,7 +611,9 @@ class Pulser:
         decay_us is the TARGET tau; with compensate_decay the requested value is
         divided by the measured 1.048 scale factor so the achieved tau matches.
         """
-        req_decay = decay_us / DECAY_SCALE if compensate_decay else decay_us
+        # additive, not multiplicative -- see DECAY_OFFSET_US
+        req_decay = (max(DECAY_MIN_US, decay_us - DECAY_OFFSET_US)
+                     if compensate_decay else decay_us)
         # energy is referred to the calibrated gain, then scaled for the gain in use
         energy_reg = max(1, min(32767, int(round(
             (amplitude_v * DEFAULT_GAIN / gain - V_INTERCEPT) / V_PER_ENERGY))))
@@ -633,14 +668,17 @@ class Pulser:
             # vendor method: IIR low-pass for the rise, then the two-region
             # interpolator so a fast rise and a long tail fit one array
             import tworegion
+            # req_decay, NOT decay_us: this path used to pass the raw request
+            # and so ignored compensate_decay entirely, which is why the old
+            # DECAY_SCALE never changed anything on the only path in use.
             samples, corn, rf, tf, shinfo = tworegion.build(
-                rise_us * 1e-6, decay_us * 1e-6)
+                rise_us * 1e-6, req_decay * 1e-6)
             tworegion.program(self.d, samples, corn, rf, tf, ch=self.ch)
             self._shape_info = shinfo
             self.wr(R_GAIN, gain)
             self.wr(R_OFFSET, offset)
             # 0x0f000004 = output polarity (manual sec 12 "Invert").
-            # invert=1 gives a POSITIVE-going pulse on this board.
+            # invert=1 gives a POSITIVE-going pulse on this DT5810B.
             self.wr(0x0f000004, 1 if invert else 0)
             self.wr(0x0f000002, 1)
             self.d.wr(0xFA00100A, 0)
@@ -677,7 +715,7 @@ class Pulser:
         self.run(True)
 
     def assert_alive(self, scope, settle=2.0, scope_ch=1):
-        """Raise if the board is wedged.
+        """Raise if the emulator is wedged.
 
         The FPGA has wedged three times in one session: USB still enumerates and
         writes are accepted without error, but nothing reaches the hardware and
@@ -685,7 +723,7 @@ class Pulser:
         looks like a perfectly good measurement, and conclusions have twice been
         drawn from one before it was noticed.
 
-        Toggling the run gate is the cheapest unambiguous test: on a live board
+        Toggling the run gate is the cheapest unambiguous test: on a live DT5810B
         the output collapses, on a wedged one it does not move.
         """
         import time as _t
@@ -705,7 +743,7 @@ class Pulser:
             return on, 0.0
         if off > 0.5 * on:
             raise RuntimeError(
-                f"BOARD WEDGED: run gate does not change the output "
+                f"EMULATOR WEDGED: run gate does not change the output "
                 f"(on {on:.3f} V, off {off:.3f} V). Power-cycle load 3 and "
                 f"reload the FX3 firmware. Any measurement taken now is stale.")
         return on, off

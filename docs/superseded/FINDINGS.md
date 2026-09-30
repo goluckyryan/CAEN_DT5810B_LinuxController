@@ -21,7 +21,7 @@ Ground truth for this attempt is **the manual** (`UM5312 rev 5`, MinerU markdown
 not the earlier reverse-engineering notes. Where they disagree, the manual wins
 unless hardware says otherwise.
 
-Everything below is either quoted from the manual or measured on the board today.
+Everything below is either quoted from the manual or measured on the emulator today.
 
 ---
 
@@ -397,12 +397,12 @@ setup and a fully specified pulse.
 
 ## C3. Day 2 (2026-09-23) — cold boot results
 
-The board lost power overnight (PDU load 3 found OFF). Powered back on, FX3
+The emulator lost power overnight (PDU load 3 found OFF). Powered back on, FX3
 firmware reloaded, clean cold FPGA state — shape RAM never written.
 
 ### Digital RC produces nothing (t12) — solid result
 
-On a virgin board, with TR=0, enable=`0xFFFFFFFF`, correct coefficients and no
+On a virgin emulator, with TR=0, enable=`0xFFFFFFFF`, correct coefficients and no
 stale state:
 
 | requested tau | amplitude | scope trigger |
@@ -436,12 +436,12 @@ held `decay_us=50`), and why blanking the shape generators in t11 killed it.
 
 ### What is NOT working, and is now the blocker
 
-**No pulses from either datapath today.** Cold board, shape RAM programmed via
+**No pulses from either datapath today.** Cold emulator, shape RAM programmed via
 the known-good `set_detector_pulse`, offset corrected to 0, rate register set,
 run gate on, `0x300012`/`0x300013` tried at several values with TR=0 and TR=1 —
 Vpp stays at ~0.09 V on a clean 1.82 V baseline, scope never triggers.
 
-Yesterday the same board produced ~1 V pulses. That is not reproducible today and
+Yesterday the same emulator produced ~1 V pulses. That is not reproducible today and
 I could not isolate the difference.
 
 ### Why I could not get further
@@ -508,4 +508,4 @@ or would you rather drive the scope yourself?
 * `t02_read_matrix.py` — read-framing matrix (addr bias × count field)
 * `t03_fpga_alive.py` — identity registers before/after bringup
 * `t04_id_scan.py` — address-space scan for the model word
-* `t05_output_check.py` — drives the board, reads scope measurements (read-only)
+* `t05_output_check.py` — drives the emulator, reads scope measurements (read-only)

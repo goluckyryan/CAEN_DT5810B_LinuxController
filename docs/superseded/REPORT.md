@@ -9,7 +9,7 @@
 # DT5810B — Mode Survey and Target-Spec Report
 
 **Target:** 1 kHz, 1 V, 100 ns rise, 50 µs decay, 0 V baseline
-**Date:** 2026-09-23 · board `21e1:000e`, CH1 into Rigol DHO4804 @ 1 MΩ
+**Date:** 2026-09-23 · emulator `21e1:000e`, CH1 into Rigol DHO4804 @ 1 MΩ
 
 ---
 
@@ -51,7 +51,7 @@ Only two values exist: **Pulser** and **AWG**. Both tested.
 | Pulsed reset | `0x300010=1`, `0x300012/13` | ❌ **no output** |
 
 Digital RC was retested here with coefficients for the new spec
-(rise=100 ns, fall=50 µs) on a cold board — still nothing. This is consistent
+(rise=100 ns, fall=50 µs) on a cold DT5810B — still nothing. This is consistent
 across every attempt this session and is the project's long-standing open item.
 
 ### 2.3 Timebase modes — the rate axis
@@ -170,7 +170,7 @@ ClockPerStep encoding, since CPS ≤ 8 is required for the rise.
 Shape-RAM already nails amplitude, baseline and decay. `TimebaseMux=4` selects an
 external trigger sampled at 4 ns (manual §10), so a 1 kHz square wave into the
 digital input would set the rate exactly. This needs a cable — either a signal
-generator, or loop the board's own digital output back via `DT_SetDIO`. This is
+generator, or loop the emulator's own digital output back via `DT_SetDIO`. This is
 the shortest path to all five if a trigger source is available.
 
 **Option C — sequence timebase.**

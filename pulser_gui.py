@@ -45,10 +45,14 @@ from pulser import (Pulser, period_for_rate, rate_for_period, volts_for_energy,
 
 LIGHT = dict(bg="#f7f8fa", panel="#ffffff", grid="#dfe3e8", text="#1f2328",
              dim="#6b7280", border="#d0d7de",
-             ok="#1d4ed8", warn="#b45309", bad="#b91c1c", field="#ffffff")
+             ok="#1d4ed8", warn="#b45309", bad="#b91c1c", field="#ffffff",
+             # disabled: Qt style sheets override the palette, so a disabled
+             # widget keeps its styled colour unless we say otherwise
+             faint="#b9bfc6", mute="#eef0f2", faintborder="#e3e6ea")
 DARK = dict(bg="#181b20", panel="#12151a", grid="#2a303a", text="#e5e7eb",
             dim="#9ca3af", border="#333b47",
-            ok="#60a5fa", warn="#fbbf24", bad="#f87171", field="#12151a")
+            ok="#60a5fa", warn="#fbbf24", bad="#f87171", field="#12151a",
+            faint="#4b525c", mute="#15181d", faintborder="#252a32")
 THEME = LIGHT
 
 
@@ -68,6 +72,20 @@ def sheet(t):
         QSpinBox, QDoubleSpinBox, QComboBox {{ background:{t['field']};
                           border:1px solid {t['border']}; border-radius:4px;
                           padding:3px; }}
+
+        /* Disabled. Without these a disabled control looks identical to a
+           live one, because the QWidget colour rule above beats the palette. */
+        QWidget:disabled {{ color:{t['faint']}; }}
+        QLabel:disabled {{ color:{t['faint']}; }}
+        QCheckBox:disabled {{ color:{t['faint']}; }}
+        QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
+                          background:{t['mute']}; color:{t['faint']};
+                          border:1px solid {t['faintborder']}; }}
+        QPushButton:disabled {{ background:{t['mute']}; color:{t['faint']};
+                          border:1px solid {t['faintborder']}; }}
+        QGroupBox:disabled {{ border:1px dashed {t['faintborder']};
+                          background:{t['mute']}; }}
+        QGroupBox::title:disabled {{ color:{t['faint']}; }}
     """
 
 
@@ -95,7 +113,7 @@ class ChannelPanel(QGroupBox):
 
         Channel 3 is a FULL channel in the vendor's model, not a stub:
         DDE-Control allocates ChannelConfiguration[NChannels + 1] -- three
-        channels for a two-channel board -- and its configuration loop runs
+        channels for a two-channel emulator -- and its configuration loop runs
         Update_Generals / Update_Energy / Update_Shape / Update_Timebase over
         all three, channel 2 included. Its `ReducedChannel` flag strips only the
         SEQUENCE modes, nothing else. So channel 3 gets rate, energy AND shape.
@@ -112,6 +130,7 @@ class ChannelPanel(QGroupBox):
         """
         super().__init__("Channel 3 — coincidence source" if ch3
                          else f"Channel {ch + 1}")
+        self._title_base = self.title()
         self.ch = ch
         self.win = win
         self.is_ch3 = ch3
@@ -119,12 +138,32 @@ class ChannelPanel(QGroupBox):
 
         self.cmb_time = QComboBox()
         self.cmb_time.addItems(["Constant rate", "Poisson"])
+        self.cmb_time.setToolTip(
+            "How the firing times are generated.\n"
+            "Constant rate: a fixed period, one pulse every 1/rate.\n"
+            "Poisson: exponentially distributed intervals, like a real source.\n"
+            "Poisson needs the timebase LFSR started (register 0x100004); that\n"
+            "was missing for the whole project and the mode emitted NOTHING at\n"
+            "all -- see README section 9i. It is done automatically now.")
         self.cmb_time.currentTextChanged.connect(self.refresh)
         f.addRow("Timebase", self.cmb_time)
 
         self.sp_rate = self._dsb(0.01, 5e6, 1000.0, " Hz", 2)
+        self.sp_rate.setToolTip(
+            "Pulse rate. period = round(312.5e6 / rate) - 1, verified flat to\n"
+            "-0.0% from 4 to 31 kHz. Range 0.01 Hz to 5 MHz.\n"
+            "Watch rate x decay: above ~0.1 the pulses pile up.\n"
+            "Two channels at the SAME rate are phase-locked, not independent --\n"
+            "they divide one clock. Detune one ~0.5% to separate them.")
         f.addRow("Rate", self.sp_rate)
-        self.sp_amp = self._dsb(0.001, 2.0, 1.0, " V", 3)
+        # stash on the widget itself: do_sync() adds and removes a "slaved"
+        # note and needs the original back
+        self.sp_rate._tip_base = self.sp_rate.toolTip()
+        self.sp_amp = self._dsb(P.AMPLITUDE_FLOOR_V, 2.0, 1.0, " V", 3)
+        self.sp_amp.setToolTip(
+            f"Below {P.AMPLITUDE_FLOOR_V} V the emulator emits nothing at all -- not a\n"
+            "small pulse, nothing. The amplitude law is only linear over\n"
+            "energy_reg 4000..30000. The box will not go lower.")
         f.addRow("Amplitude", self.sp_amp)
 
         # --- energy: one fixed amplitude, or drawn from a spectrum ---
@@ -134,7 +173,7 @@ class ChannelPanel(QGroupBox):
         self.cmb_energy.setToolTip(
             "Fixed = every pulse the same height (EnergyMode 0).\n"
             "The others load a histogram into the spectrum RAM and let the\n"
-            "board draw each pulse's amplitude from it (EnergyMode 1), which is\n"
+            "emulator draw each pulse's amplitude from it (EnergyMode 1), which is\n"
             "what makes this a source emulator rather than a pulser.\n"
             "'Amplitude' above becomes the peak centre / upper edge.")
         self.cmb_energy.currentIndexChanged.connect(self._energy_mode_changed)
@@ -143,17 +182,27 @@ class ChannelPanel(QGroupBox):
         self.sp_sigma = self._dsb(0.002, 1.0, 0.05, " V", 3)
         self.sp_sigma.setToolTip("Gaussian sigma of the peak, in volts.")
         self._row_sigma = f.rowCount(); f.addRow("Peak width", self.sp_sigma)
-        self.sp_peak2 = self._dsb(0.005, 2.0, 0.5, " V", 3)
+        self.sp_peak2 = self._dsb(P.AMPLITUDE_FLOOR_V, 2.0, 0.5, " V", 3)
+        self.sp_peak2.setToolTip(
+            "Centre of the second Gaussian peak, in volts.\n"
+            "Its height relative to the first is set by 2nd/1st below.")
         self._row_peak2 = f.rowCount(); f.addRow("2nd peak", self.sp_peak2)
         self.sp_ratio = self._dsb(0.01, 100.0, 1.0, "", 2)
         self.sp_ratio.setToolTip("Intensity of the 2nd peak relative to the 1st.")
         self._row_ratio = f.rowCount(); f.addRow("2nd/1st", self.sp_ratio)
-        self.sp_flat_lo = self._dsb(0.005, 2.0, 0.1, " V", 3)
+        self.sp_flat_lo = self._dsb(P.AMPLITUDE_FLOOR_V, 2.0, 0.35, " V", 3)
+        self.sp_flat_lo.setToolTip(
+            "Lower edge of a flat continuum; the upper edge is Amplitude.\n"
+            "Use for a Compton-plateau-like background.")
         self._row_flatlo = f.rowCount(); f.addRow("Continuum from", self.sp_flat_lo)
         csv = QHBoxLayout()
         self.lbl_csv = QLabel("(none)"); self.lbl_csv.setWordWrap(True)
         self.btn_csv = QPushButton("Browse...")
         self.btn_csv.clicked.connect(self._pick_csv)
+        self.btn_csv.setToolTip(
+            "Load a two-column CSV (bin, counts), the same shape the vendor's\n"
+            "'Import an Energy Spectrum from File' takes. It is rebinned onto\n"
+            "the hardware's 16384-bin grid.")
         csv.addWidget(self.lbl_csv, 1); csv.addWidget(self.btn_csv)
         wcsv = QWidget(); wcsv.setLayout(csv)
         self._row_csv = f.rowCount(); f.addRow("Spectrum file", wcsv)
@@ -167,14 +216,24 @@ class ChannelPanel(QGroupBox):
             "is NOT a register. The shape geometry is then chosen to suit it.")
         self._row_rise = f.rowCount(); f.addRow("Rise (10-90%)", self.sp_rise)
         self.sp_decay = self._dsb(0.05, 5000.0, 50.0, " us", 2)
+        self.sp_decay.setToolTip(
+            "Exponential decay constant tau, NOT the 10-90 fall time.\n"
+            "The emulator runs long by a constant 3.86 us, so the request has\n"
+            "that subtracted before programming (see the compensate box).\n"
+            "Corrected accuracy: -3.3 to +7.8% over 10..200 us.")
         self._row_decay = f.rowCount(); f.addRow("Decay tau", self.sp_decay)
         self.sp_base = self._dsb(-1.5, 1.5, 0.0, " V", 3)
+        self.sp_base.setToolTip(
+            "DC level the pulse sits on, via the offset register 0x0f000000.\n"
+            "Solved per channel: CH2's analog stage is inverted, so its offset\n"
+            "law is a different one (README section 9d). Calibrated for\n"
+            "POSITIVE-going output; negative polarity may land elsewhere.")
         self._row_base = f.rowCount(); f.addRow("Baseline", self.sp_base)
         self.sp_noise = self._dsb(0.0, 230.0, 0.0, " mV rms", 1)
         self.sp_noise.setSpecialValueText("none")
         self.sp_noise.setToolTip(
             "Broadband noise added to the baseline (register 0x1400000,\n"
-            "3.55 uV rms per count). The board has an intrinsic ~20 mV rms\n"
+            "3.55 uV rms per count). The emulator has an intrinsic ~20 mV rms\n"
             "floor that this adds to in quadrature, so small values are\n"
             "swamped by it.")
         self._row_noise = f.rowCount(); f.addRow("Noise", self.sp_noise)
@@ -192,10 +251,25 @@ class ChannelPanel(QGroupBox):
         self._row_pol = f.rowCount(); f.addRow("Polarity", self.cmb_pol)
 
         self.sp_dead = QSpinBox(); self.sp_dead.setRange(0, 2**31 - 1)
+        self.sp_dead.setToolTip(
+            "Dead time after each pulse, in 312.5 MHz clock counts (3.2 ns\n"
+            "each). 0 disables it. Emulates a detector or DAQ that cannot\n"
+            "retrigger immediately.")
         f.addRow("Dead time (counts)", self.sp_dead)
         self.chk_paral = QCheckBox("paralyzable")
+        self.chk_paral.setToolTip(
+            "Dead-time model. Unticked (non-paralyzable): events during the\n"
+            "dead time are simply lost. Ticked (paralyzable): each event\n"
+            "RESTARTS the dead time, so at high rates the output rate collapses\n"
+            "rather than saturating.")
         f.addRow("", self.chk_paral)
-        self.chk_comp = QCheckBox(f"compensate decay (x1/{P.DECAY_SCALE})")
+        self.chk_comp = QCheckBox(f"compensate decay (−{P.DECAY_OFFSET_US:g} us)")
+        self.chk_comp.setToolTip(
+            f"The emulator's decay runs long by a constant {P.DECAY_OFFSET_US} us --\n"
+            "additive, not a scale factor (README section 9l). With this on,\n"
+            "that is subtracted before programming, and 10/20/50/100/200 us\n"
+            "come out within -3.3 to +7.8 %. With it off they come out\n"
+            "15.0/23.6/53.6/103.4/204.5 us.")
         self.chk_comp.setChecked(True)
         self._row_comp = f.rowCount(); f.addRow("", self.chk_comp)
 
@@ -208,9 +282,17 @@ class ChannelPanel(QGroupBox):
 
         row = QHBoxLayout()
         self.btn_apply = QPushButton("Apply + Run")
+        self.btn_apply.setToolTip(
+            "Program this channel and start it: shape RAM, timebase, energy\n"
+            "(fixed or spectrum), gain, offset, polarity and noise, then the\n"
+            "run gate. The first call after connecting programs twice -- the\n"
+            "first pass does not take and the reason is unknown.")
         self.btn_apply.clicked.connect(
             lambda: (win.do_apply_ch3() if ch3 else win.do_apply(self.ch)))
         self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setToolTip(
+            "Close this channel's run gate (0x01c00006 = 0). The configuration\n"
+            "stays programmed; Apply restarts it.")
         self.btn_stop.clicked.connect(
             lambda: (win.do_ch3_off() if ch3 else win.do_stop(self.ch)))
         row.addWidget(self.btn_apply); row.addWidget(self.btn_stop)
@@ -228,7 +310,14 @@ class ChannelPanel(QGroupBox):
             for r in (self._row_base, self._row_pol):
                 f.setRowVisible(r, False)
             self.btn_apply.setText("Apply channel 3")
+            self.btn_apply.setToolTip(
+                "Program the third generator and put the emulator into\n"
+                "coincidence mode: its event is injected into CH1 and CH2\n"
+                "together, so the two outputs are ENERGY-correlated.")
             self.btn_stop.setText("Disable")
+            self.btn_stop.setToolTip(
+                "Leave coincidence mode: sets Correlation back to Off, and the\n"
+                "two channels return to their own generators.")
         self._energy_mode_changed()   # sets initial row visibility, then refreshes
 
     def _energy_mode_changed(self):
@@ -316,7 +405,12 @@ class ChannelPanel(QGroupBox):
             self.lbl_reg.setText(f"<span style='color:{t['bad']}'>{e}</span>")
             return
 
-        gain, _auto, extrap = P.auto_gain(s['amplitude_v'])
+        try:
+            gain, _auto, extrap = P.auto_gain(s['amplitude_v'])
+        except ValueError as e:
+            self.lbl_reg.setText(f"<span style='color:{t['bad']}'>{e}</span>")
+            self.lbl_chk.setText(f"<span style='color:{t['bad']}'>amplitude too low</span>")
+            return
         er = max(1, min(32767, int(round(
             (s['amplitude_v'] * P.DEFAULT_GAIN / gain - P.V_INTERCEPT)
             / P.V_PER_ENERGY))))
@@ -377,6 +471,33 @@ class ChannelPanel(QGroupBox):
             f"<span style='color:{t['ok']}'>ok</span>" if not warn else
             f"<span style='color:{t['warn']}'>" + "<br>".join(warn) + "</span>")
 
+    def setEnabled(self, on):
+        """Grey out, and say in the title WHY the panel is inert.
+
+        Qt disables children automatically, but with a style sheet in force
+        that is not visible on its own -- the disabled colours come from the
+        :disabled rules in sheet().
+        """
+        super().setEnabled(on)
+        if getattr(self, 'is_ch3', False):
+            self.setTitle(self._title_base if on else
+                          self._title_base + "   —  set Correlation to “Coincidence”")
+        # The readout labels carry inline HTML colours, and inline colour beats
+        # the :disabled style sheet rule -- an orange warning would otherwise
+        # keep shouting from a dead panel. Fade them by hand, and let refresh()
+        # put the real colours back when the panel comes alive again.
+        if not hasattr(self, 'lbl_chk'):
+            return                      # still constructing
+        if on:
+            self.refresh()
+        else:
+            import re as _re
+            for lab in (self.lbl_reg, self.lbl_geom, self.lbl_chk):
+                # keep the line breaks: <br> must become a break, not vanish
+                plain = _re.sub(r'(?i)<br\s*/?>', '<br>', lab.text())
+                plain = _re.sub(r'<(?!br>)[^>]+>', '', plain)
+                lab.setText(f"<span style='color:{THEME['faint']}'>{plain}</span>")
+
     def set_enabled(self, on):
         for w in (self.cmb_time, self.sp_rate, self.sp_amp, self.sp_rise,
                   self.sp_decay, self.sp_base, self.sp_noise, self.cmb_pol,
@@ -403,9 +524,14 @@ class PulserWindow(QMainWindow):
         self.lbl_conn = QLabel("connecting...")
         self.lbl_conn.setWordWrap(True)
         self.btn_conn = QPushButton("Retry connection")
+        self.btn_conn.setToolTip(
+            "Re-attempt the USB connection. If the emulator is at 21e1:000d it\n"
+            "is in the FX3 bootloader and the firmware is loaded first; the\n"
+            "firmware is volatile and goes after every cold power-up.")
         self.btn_conn.clicked.connect(self.do_connect)
         self.btn_conn.setVisible(False)
         self.chk_dark = QCheckBox("dark")
+        self.chk_dark.setToolTip("Switch between the light and dark colour schemes.")
         self.chk_dark.stateChanged.connect(self.toggle_theme)
         l0.addWidget(self.lbl_conn, 1)
         l0.addWidget(self.btn_conn)
@@ -443,7 +569,7 @@ class PulserWindow(QMainWindow):
         self.sp_delay.setToolTip(
             f"How far CH2 lags CH1 at the outputs. One 1.25 GS/s DAC sample =\n"
             f"{DELAY_NS_PER_COUNT} ns; range {lo_ns:.0f} to {hi_ns:.0f} ns. 0 means aligned --\n"
-            "the board's fixed pipeline skew is already taken out.\n"
+            "the emulator's fixed pipeline skew is already taken out.\n"
             "Shared-timebase mode only: measured to have NO effect on channel-3\n"
             "events, which arrive with a fixed ~47 ns skew.")
         self.sp_delay.valueChanged.connect(self.do_sync)
@@ -465,6 +591,7 @@ class PulserWindow(QMainWindow):
         self.panel3 = ChannelPanel(P.Pulser.CH3, self, ch3=True)
         self.panel3.sp_rate.setValue(500.0)
         self.panel3.sp_amp.setValue(1.0)
+        self.panel3.setEnabled(False)      # until coincidence mode is chosen
         chans.addWidget(self.panel3)
         outer.addLayout(chans, 1)
 
@@ -491,7 +618,8 @@ class PulserWindow(QMainWindow):
             pn.set_enabled(on)
         self.cmb_corr.setEnabled(on)
         self.sp_delay.setEnabled(on)
-        self.panel3.set_enabled(on and self.cmb_corr.currentIndex() == 2)
+        # group-box level, so the whole channel-3 panel greys out together
+        self.panel3.setEnabled(on and self.cmb_corr.currentIndex() == 2)
         if on:
             self.do_sync()        # re-assert routing and control availability
 
@@ -525,7 +653,7 @@ class PulserWindow(QMainWindow):
                     "No DT5810B on USB. Check it is powered "
                     "(pdu/pduOnOff.sh on 3) and the cable is connected.")
             if st == "boot":
-                note("board is in bootloader (000d) - loading FX3 firmware")
+                note("emulator is in bootloader (000d) - loading FX3 firmware")
                 loader = os.path.join(HERE, "fx3_firmware_loader.py")
                 subprocess.run([sys.executable, loader], capture_output=True,
                                text=True, timeout=120)
@@ -535,9 +663,9 @@ class PulserWindow(QMainWindow):
                         break
                 else:
                     raise RuntimeError(
-                        "Firmware load did not bring the board to 000e. "
+                        "Firmware load did not bring the emulator to 000e. "
                         "Try running fx3_firmware_loader.py by hand.")
-                note("firmware loaded, board is at 000e")
+                note("firmware loaded, emulator is at 000e")
             note("opening USB and running FPGA bringup")
             self.p.open()
             self.connected = True
@@ -584,8 +712,12 @@ class PulserWindow(QMainWindow):
         # than leaving a live-looking control that does nothing
         rate2 = self.panels[1].sp_rate
         rate2.setEnabled(self.connected and mode != 1)
-        rate2.setToolTip("slaved to CH1 while the timebase is shared"
-                         if mode == 1 else "")
+        # restore the real tooltip rather than blanking it -- an earlier
+        # version set "" here and silently destroyed the control's help
+        rate2.setToolTip(
+            ("SLAVED TO CH1 while the timebase is shared — this box has no "
+             "effect.\n\n" + rate2._tip_base) if mode == 1
+            else rate2._tip_base)
         if not self.connected:
             return
         t = THEME
