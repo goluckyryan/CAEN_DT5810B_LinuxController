@@ -33,10 +33,17 @@ Everything below was measured on this setup, 2026-09-22..29.
 
 ```bash
 ~/caen_signal_emulator/pdu/pduOnOff.sh on 3   # power (PDU load 3, outside this repo)
+sudo bash tools/install_usb_rules.sh          # one-time: /dev/bus/usb access for non-root
 python3 fx3_firmware_loader.py               # 000d -> 000e, volatile firmware
 python3 pulser_gui.py        # detector-emulator GUI -- this is the software
 python3 scope/monitor.py     # optional live scope read-back (local, see below)
 ```
+
+Without the udev rule, the FX3 node is `root:root 664` and libusb opens fail with
+the misleading "Device not found in bootloader mode". The rule (`vendor 0x21e1 ->
+MODE 0666`) covers both boot and normal PIDs and survives replug and re-enumeration.
+The firmware image is found in `./firmware/dt5810usb.img` first, so on a machine
+without `~/caen_signal_emulator/` it can simply be copied there.
 
 Headless, the reference signal (1 kHz, 1 V, 100 ns rise, 50 µs decay, 0 V base):
 
