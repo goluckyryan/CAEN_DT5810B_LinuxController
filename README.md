@@ -166,24 +166,115 @@ ch1:  value = (cached & 0xc) +  analogsel + filter*2          // bits 0-1
 then: write(analogsel, 0xF0000043 + channel)                  // HP/HR range
 ```
 
-| value | CH0 filter | CH0 analogsel |
-|---|---|---|
-| `0x0F` | ON | 1 — **what we run** |
-| `0x0B` | **OFF** | 1 — same connector, filter removed |
-| `0x07` | ON | 0 — *different output connector* |
+| value | CH0 filter | CH0 analogsel | drives connector |
+|---|---|---|---|
+| `0x0F` | ON | 1 | **OUT1 HDR** — what we run |
+| `0x0B` | **OFF** | 1 | OUT1 HDR, filter removed |
+| `0x07` | ON | 0 | **OUT1** (FAST) |
 
 **`invert` is NOT in this register** (it is `0x0f000004`). Two older notes are
 wrong about it: `KNOWLEDGE_BASE.md`'s `(range&3)+(invert<<2)+(filter<<3)`, and
-`DRC_SESSION_CHECKPOINT.md`'s "0xF=pos, 0xB=neg".
+`DRC_SESSION_CHECKPOINT.md`'s "0xF=pos, 0xB=neg". The same wrong decode is still
+live in `../dt5810.py:343` (the DRC path), which is one more reason that path is
+suspect — see §7.
 
 This also corrects something I concluded earlier in this work: writing `0x07`
 did not "kill the output" — it switched `analogsel`, i.e. moved the signal to the
-**other output connector**. Untested prediction: `0x0B` removes the 30 MHz filter
-while keeping the same connector, which per manual Tab 9.1 should take the rise
-from 25 ns to ~1 ns. Note the vendor reference captures show a ~10 ns hardware
-floor with whatever filter setting the Windows software uses, so this may already
-be off there.
-`experiments/t20_analog_filter.py` is written and ready to run.
+**other output connector**. See the next subsection for which connector is which.
+
+`0x0B` removes the 30 MHz filter while keeping the same connector. Earlier I
+predicted that takes the rise from 25 ns to ~1 ns; **that prediction was wrong**,
+because it assumed we were on the FAST output. We are on HDR, where manual Tab 9.1
+gives 42 ns filter-ON and 25 ns filter-OFF — so expect roughly 42 → 25 ns, not
+25 → 1 ns. The ~1 ns figure belongs to FAST with the filter off, i.e. `0x03`.
+Note the vendor reference captures show a ~10 ns hardware floor with whatever
+setting the Windows software uses, which does not fit HDR-with-filter and is
+itself unexplained. `experiments/t20_analog_filter.py` is written and ready to run.
+
+### Output connectors — FAST vs HDR
+
+The emulator has **six outputs on the front panel: four analog (two per channel)
+and two digital.** Manual §8 Panel Description:
+
+| front-panel label | per channel | type |
+|---|---|---|
+| OUT1 / OUT2 | Fast analog output | LEMO 00 |
+| OUT1 HDR / OUT2 HDR | **H**igh **D**ynamic **R**ange analog output | LEMO 00 |
+| GPO1 / GPO2 | digital output, LVCMOS 0–3.3 V | LEMO 00 |
+
+(Inputs, for completeness: GPI1/GPI2 digital, plus one shared analog SE input.)
+
+**HDR is a second analog front-end fed by the same 16-bit DAC and the same
+datapath — it trades bandwidth for voltage swing, and is intended for emulating
+PMT-like signals.** The two are **mutually exclusive**: one bit per channel
+selects which front-end, and therefore which connector, is live. You cannot take
+FAST and HDR out of the same channel at the same time.
+
+| | FAST (`OUTn`) | HDR (`OUTn HDR`) |
+|---|---|---|
+| range | ±2 V @ 50 Ω, ±4 V high-Z | ±8 V high-Z (see caveat below) |
+| rise, filter OFF | 1 ns | 25 ns |
+| rise, filter ON | 25 ns | 42 ns |
+| front-end | CFA op-amp, >2.5 GHz, 4000 V/µs | "more relaxed electronics" |
+| manual name | High Speed | High Voltage |
+
+**That bit is `analogsel`.** The vendor C# makes the identification direct —
+the 5th argument of `ConfigureGeneral` is literally a cast of the GUI's
+Channel Range setting:
+
+```csharp
+// DDE-Control.decompiled.cs:12603
+PHY.DT_ConfigureGeneral(gAIN, round(a), ...Invert, ...FilterOut,
+                        (uint)cfg.Config.Channel[ch].OutputConfiguration.ChannelRange,
+                        ConnectionHandle, ch);
+// :7438   ConfigureGeneral(double GAIN, int OFFSET, uint INVERT, uint OUTFILTER,
+//                          uint ANALOGSEL, int handle, int CHANNEL)
+// :7994   enum ChannelRange { V2, V10 }     // V2 = 0, V10 = 1
+```
+
+So **`analogsel 0` = `ChannelRange.V2` = High Speed = FAST connector**, and
+**`analogsel 1` = `ChannelRange.V10` = High Voltage = HDR connector**. The DLL
+writes it both into the `0xF00000C2` mux and to `0xF0000043 + channel`
+(Ghidra labelled those two "HP/HR analog sel"; the vendor's own naming is HS/HV).
+
+The conversion code confirms the split all the way up to volts — separate LSB
+scales per range, and a factor 2 for the termination:
+
+```csharp
+// :8537  LSBToV
+if (ichannelRange == ChannelRange.V2) return LSB/2.0 * HS_LSB_V / ImpedanceToDivison(Impedance);
+                                      return LSB/2.0 * HV_LSB_V / ImpedanceToDivison(Impedance);
+// :8529  ImpedanceToDivison: index 0 -> 0.5 (50 Ω), else 1.0 (High-Z)
+```
+
+The `LSB/2.0` here is the other side of our `0x20f005 = LSB × 2` (§3 Energy).
+
+⚠️ **We have been running on HDR this whole time, not FAST.** `dt5810.py:234`
+writes `0xF00000C2 = 0xF`, which is `analogsel = 1`. Every calibration in §5 and
+every measurement in §9 is therefore an **HDR-output** measurement. This is a
+code-reading result, not a bench result — nobody has yet confirmed which LEMO the
+scope cable is actually in. **Check that before trusting the pairing**, and if we
+want the 1 ns edge the FAST output exists and is one register write away (`0x07`,
+or `0x03` for FAST with the filter off).
+
+⚠️ **The HDR voltage is quoted four different ways** and the manual contradicts
+itself. Design to ±8 V:
+
+| source | value |
+|---|---|
+| Table 0.1 operating limits (p.10) | −8 V … +8 V (High-Z) |
+| Technical Specifications §2 (p.14) | ±8 V high-Z |
+| §8 panel caution (p.21) | "12 V the HDR Output" |
+| §9 Analog Outputs (p.26) | "range of 24 V (−12 to +12 V) … at high impedance (1 kΩ)" |
+| vendor enum | `ChannelRange.V10` |
+
+Best reading: the stage is physically capable of ±12 V into 1 kΩ, the GUI calls
+it 10 V, and the rated/guaranteed figure is ±8 V. Treat anything above 8 V as
+untested headroom.
+
+Also from §9: with high impedance, sharp edges can produce multiple reflections,
+and CAEN **strongly recommends enabling the 30 MHz filter** when using high-Z —
+which is the normal HDR case, and is what `0x0F` already does.
 
 ### Digital RC
 `0x300000`..`0x300009` coefficients, `0x30000a` latch strobe, `0x30000b` enable
@@ -1143,6 +1234,7 @@ beside it on disk but are gitignored, and are marked *(local)*.
 | `scope/` | Rigol DHO4804 access — `scope.py` (strictly read-only), `analyse_trace.py`, and `monitor.py`, a standalone live read-back window to run alongside the GUI. Every calibration here was measured through it, but it is apparatus, not product, and its IP is hardcoded |
 | `experiments/` | the 26 numbered experiments behind §9, the superseded deliverables, and **AWG mode** (`awg_gui.py`, `awg_backend.py` — see §6). `INDEX.md` records what each proved and which are confounded |
 | `backup_pre_addrfix/` | pre-fix source snapshot, superseded by git history |
+| `../WEB_UM5312_DT5810_Fast_Digital_Detector_Emulator_v5.pdf` | **the CAEN manual.** Every "manual §N" / "Tab 9.1" citation in this file refers to it. Not vendored (7.8 MB, CAEN copyright) |
 
 `pulser_gui.py` does not import `scope/` at all: it controls the emulator and
 nothing else. The read-back that used to be a "poll scope" checkbox inside it is
